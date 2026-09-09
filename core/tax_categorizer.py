@@ -125,12 +125,40 @@ NON_PNL_PATTERNS = {
         r"\bline\s+of\s+credit\b",
         r"\bloc\s+(?:draw|advance)\b",
         r"\bmerchant\s+cash\s+advance\b",
+        # Named online small-business lenders. Confirmed on a real statement:
+        # a $37,500 loan draw from "Headwaycapital" was counted as Gross
+        # Receipts, and its 9 biweekly repayment debits ("Hwcrcvbls" -- the
+        # lender's own ACH descriptor code) totaling $44,512.32 sat in
+        # Uncategorized as if they were a deductible expense. Both a loan
+        # draw and its repayment belong off the P&L entirely -- only the
+        # interest portion of a repayment is deductible, and a bank statement
+        # never breaks that out per-payment, so this can only ever exclude
+        # the whole payment and flag it, never estimate the interest split.
+        # This list is not exhaustive; other clients will surface other
+        # lenders the same way "google ads" and "o'reilly" surfaced other
+        # keyword gaps -- add the exact name/descriptor as it's confirmed.
+        r"\bheadway\s*capital\b",
+        r"\bhwcrcvbls\b",
+        r"\bkabbage\b",
+        r"\bondeck\b",
+        r"\bbluevine\b",
+        r"\bfundbox\b",
+        r"\bcredibly\b",
+        r"\brapid\s+finance\b",
+        r"\bnational\s+funding\b",
+        r"\bforward\s+financing\b",
     ],
     "Non-P&L: Tax Refund / Reimbursement": [
         r"\brefund\b",
         r"\breimbursement\b",
         r"\breimb\b",
         r"\b(?:irs|state)\s+(?:\w+\s+){0,2}refund\b",
+        # The standard ACH descriptor for a federal tax refund abbreviates
+        # "refund" to "REF" -- "IRS TREAS 310 TAX REF" is the literal code the
+        # IRS uses on every direct-deposit refund, confirmed on a real
+        # statement. "\brefund\b" alone never matches this.
+        r"\birs\s+treas\s+\d+\s+tax\s+ref\b",
+        r"\btax\s+ref\b",
         # A vendor credit on a card/account -- e.g. "Card Credit The Home
         # Depot" on a real statement -- is money coming back for an earlier
         # purchase, not new business revenue. Without this, a deposit-side
@@ -138,6 +166,17 @@ NON_PNL_PATTERNS = {
         r"\bcard\s+credit\b",
         r"\bpurchase\s+return\b",
         r"\bmerchandise\s+credit\b",
+    ],
+    # A deposit the bank later reversed (a bounced check, most commonly) is
+    # not new revenue -- it is the undoing of a deposit that never actually
+    # cleared. Its own separate category rather than folded into "refund"
+    # since a preparer needs to know a check bounced, specifically, to follow
+    # up with the client about it.
+    "Non-P&L: Returned/Reversed Deposit": [
+        r"\breturned\s+deposit\s+item\b",
+        r"\bdeposit\s+(?:return|reversal|reversed|correction)\b",
+        r"\bunauthorized\s+return\b",
+        r"\bnsf\s+return\b",
     ],
 }
 

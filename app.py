@@ -57,7 +57,14 @@ categorizer = TaxCategorizer()
 
 with st.sidebar.expander("➕ Add Custom Payee Rule"):
     new_payee = st.text_input("Vendor / Payee Keyword (e.g. 'Smith Hardware')", key="new_payee_kw")
-    target_cat = st.selectbox("IRS Schedule C Category", list(SCHEDULE_C_CATEGORIES.keys()) + ["Non-P&L: Internal Transfer", "Non-P&L: Credit Card Payment", "Non-P&L: Owner Draw / Contribution"])
+    target_cat = st.selectbox("IRS Schedule C Category", list(SCHEDULE_C_CATEGORIES.keys()) + [
+        "Non-P&L: Internal Transfer",
+        "Non-P&L: Credit Card Payment",
+        "Non-P&L: Owner Draw / Contribution",
+        "Non-P&L: Loan Proceeds / Repayment",
+        "Non-P&L: Tax Refund / Reimbursement",
+        "Non-P&L: Returned/Reversed Deposit",
+    ])
     if st.button("Save Local Rule"):
         if new_payee:
             categorizer.save_custom_rule(new_payee, target_cat)

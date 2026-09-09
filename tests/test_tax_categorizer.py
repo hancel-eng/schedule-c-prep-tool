@@ -148,3 +148,42 @@ def test_apostrophe_free_vendor_name_still_matches_dictionary_entry():
         -25.0, False
     )
     assert cat == "Line 9: Car and truck expenses"
+
+
+# --- Loan draws/repayments and abbreviated refund codes --------------------
+
+def test_named_online_lender_loan_draw_excluded_from_gross_receipts():
+    """Confirmed on a real statement: a $37,500 loan draw from
+    "Headwaycapital" was counted as Gross Receipts."""
+    cat, _, _ = TaxCategorizer().categorize_transaction(
+        "Headwaycapital 2 Headway Dakota Gearhea 301006345", "",
+        37500.0, True
+    )
+    assert cat == "Non-P&L: Loan Proceeds / Repayment"
+
+
+def test_lender_repayment_descriptor_excluded_from_expenses():
+    """The lender's own ACH repayment descriptor code, not a spelled-out
+    company name -- confirmed on a real statement across 9 repayments."""
+    cat, _, _ = TaxCategorizer().categorize_transaction(
+        "Hwcrcvbls 23 Headway Dakota Gearhea 245977356", "",
+        -3160.57, False
+    )
+    assert cat == "Non-P&L: Loan Proceeds / Repayment"
+
+
+def test_irs_tax_refund_abbreviated_as_ref_is_excluded():
+    """The standard ACH descriptor abbreviates "refund" to "REF" -- "IRS
+    TREAS 310 TAX REF" is the literal code the IRS uses on every refund."""
+    cat, _, _ = TaxCategorizer().categorize_transaction(
+        "Irs Treas 310 Tax Ref Gearheart, Dak", "", 2205.0, True
+    )
+    assert cat == "Non-P&L: Tax Refund / Reimbursement"
+
+
+def test_returned_deposit_item_is_not_gross_receipts():
+    """A bounced check reversal is not new revenue."""
+    cat, _, _ = TaxCategorizer().categorize_transaction(
+        "Returned Deposit Item # of Itm(S) 0001", "", 2100.0, True
+    )
+    assert cat == "Non-P&L: Returned/Reversed Deposit"
