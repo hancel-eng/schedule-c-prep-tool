@@ -30,7 +30,17 @@ class ReconciliationChecker:
         beginning = statement_summary.get("beginning_balance") or 0.0
         ending = statement_summary.get("ending_balance") or 0.0
         declared_deposits = statement_summary.get("total_deposits") or 0.0
-        declared_withdrawals = statement_summary.get("total_withdrawals") or 0.0
+        # A bank statement's own "Withdrawals" figure routinely excludes Checks
+        # and Fees, which it breaks out as their own summary totals (a real
+        # statement's own arithmetic: Beginning + Deposits - Withdrawals -
+        # Fees - Checks == Ending, exactly). Extraction captures all of it, so
+        # the declared side needs to as well or a fully-correct extraction
+        # gets flagged as a discrepancy.
+        declared_withdrawals = (
+            (statement_summary.get("total_withdrawals") or 0.0)
+            + (statement_summary.get("total_checks") or 0.0)
+            + (statement_summary.get("total_fees") or 0.0)
+        )
         doc_type = statement_summary.get("document_type", "unknown")
 
         extracted_deposits = sum(

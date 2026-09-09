@@ -131,6 +131,13 @@ NON_PNL_PATTERNS = {
         r"\breimbursement\b",
         r"\breimb\b",
         r"\b(?:irs|state)\s+(?:\w+\s+){0,2}refund\b",
+        # A vendor credit on a card/account -- e.g. "Card Credit The Home
+        # Depot" on a real statement -- is money coming back for an earlier
+        # purchase, not new business revenue. Without this, a deposit-side
+        # vendor credit falls straight through to Income: Gross Receipts.
+        r"\bcard\s+credit\b",
+        r"\bpurchase\s+return\b",
+        r"\bmerchandise\s+credit\b",
     ],
 }
 
@@ -145,6 +152,19 @@ GENERIC_DESCRIPTION_TOKENS = {
 }
 
 CUSTOM_RULES_FILE = "custom_rules.json"
+
+# Compiled once at import time, not per transaction: a naive `kw in text`
+# substring check false-positives on short/generic keywords -- confirmed on a
+# real statement where "mobil" (the gas brand, a Line 9 keyword) matched
+# inside "mobile" in "CAPITAL ONE MOBILE PYMT", miscategorizing a $2,250 card
+# payment as a car/truck expense. Word-boundary regex matching closes that
+# whole class of false positive (also guards "bp" inside unrelated words,
+# "rent" inside "current"/"different", "ink" inside "drink", etc.) without
+# having to hand-audit every keyword for length.
+_CATEGORY_PATTERNS = {
+    cat: [(kw, re.compile(r'\b' + re.escape(kw) + r'\b')) for kw in keywords]
+    for cat, keywords in SCHEDULE_C_CATEGORIES.items()
+}
 
 class TaxCategorizer:
     """
@@ -208,9 +228,9 @@ class TaxCategorizer:
         matched_cat = None
         matched_score = 0.0
 
-        for cat, keywords in SCHEDULE_C_CATEGORIES.items():
-            for kw in keywords:
-                if kw in clean_text or kw in raw_text:
+        for cat, patterns in _CATEGORY_PATTERNS.items():
+            for kw, kw_pattern in patterns:
+                if kw_pattern.search(clean_text) or kw_pattern.search(raw_text):
                     matched_cat = cat
                     matched_score = 0.92 if len(kw) > 4 else 0.80
                     break

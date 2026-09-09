@@ -180,3 +180,123 @@ The reconciliation logic, categorizer and parsers are covered by tests and were
 run against `sample_data/`. The new Streamlit tab and dashboard metric were
 confirmed to render and compile, but were not exercised with an actual file
 upload in an automated test — Streamlit's uploader does not lend itself to one.
+
+---
+
+## Real-data verification pass — 2026-09-09
+
+Ran the full pipeline against a real 12-month engagement (11 Capital One card
+statements, 11 Regions bank statements + 11 matching scanned-check PDFs, 1
+comparative QuickBooks P&L) and traced every reported dollar back to its
+source. Reported Gross Receipts dropped from **$2,123,580.74 to $503,833.34**
+(bank/card statements only — the P&L file, if also uploaded, still double-
+counts the same activity; see Gap 11). Eight distinct bugs were found and
+fixed, each reproduced against the real files before and after, with
+regression tests added in `tests/test_real_world_regressions.py` using
+synthetic fixtures (never the client's own PDFs).
+
+### Fixed
+
+1. **P&L parser read the wrong year column, double-counted subtotals, and
+   flipped loss signs.** A comparative P&L ("Jan-Dec 25 | Jan-Dec 24") always
+   had its last-printed number captured — the 2024 column, not 2025 — and
+   `Total Income`/`Net Ordinary Income`/`Net Income`/`Total Other Income`
+   were summed on top of the detail lines they restate. Six duplicate/
+   subtotal lines from one file alone contributed **$1,129,847.95** of
+   phantom income. Rewritten to pick the requested year's column, skip every
+   subtotal/derived line, and preserve the source's own sign.
+2. **Merged/glued statement text broke every downstream keyword match.** Two
+   distinct causes, confirmed at the pdfplumber character-coordinate level:
+   Regions statements have a real gap the default `x_tolerance` (3pt) missed
+   (fixed by lowering it); Capital One statements have *zero* gap in the PDF
+   text stream itself between fragments like `PYMTAuthDate` (fixed with a
+   post-extraction spacing-recovery heuristic). Real-world impact: a $2,250
+   card payment matched the "mobil" (gas station) keyword as a substring of
+   "mobile" and was booked as a Car/Truck **expense** instead of excluded.
+3. **Word-boundary matching added everywhere a keyword is checked.** The
+   "mobil"/"mobile" collision above was one instance of a systemic class of
+   bug — short/generic keywords (`bp`, `cpa`, `aws` ⊂ "dr**aws**", `rent` ⊂
+   "cur**rent**") matched as bare substrings. All 140+ keywords now match on
+   word boundaries.
+4. **Cleared-checks listings were never captured, in any file, at all.** The
+   `*checks.pdf` files are scanned check images (confirmed: zero extractable
+   text — the known OCR gap, Gap 1). But the main statement *also* lists
+   cleared checks in text, as two "Date CheckNo Amount" pairs per line — a
+   different order and shape than the parser's regex assumed. ~$5,130/month
+   in real check expenses was silently missing everywhere. New dedicated
+   two-per-line parser matches the statement's own "Total Checks" figure to
+   the cent.
+5. **December transactions in a January-closing statement got the wrong
+   year.** A billing cycle "Dec 26, 2024 – Jan 25, 2025" had every
+   transaction stamped with the year parsed from the filename (2025),
+   including the December ones. Fixed by resolving each transaction's year
+   from the statement's own closing month (itself parsed from the filename's
+   `MM DD YYYY` convention) rather than blanket-applying one year.
+6. **Card interest charges have no date of their own and were dropped
+   entirely.** `Interest Charge on Purchases $95.58` never matched the
+   dated-transaction pattern (no leading date), so real Line 16b interest
+   expense was silently missing from every Capital One statement, even after
+   the earlier `SUMMARY_TERMS` fix (which only stopped an already-matched
+   line from being discarded — this line was never matched in the first
+   place). Now captured, dated to the statement's closing date.
+7. **Vendor credits inflated Gross Receipts.** `Card Credit The Home Depot`
+   (a refund on an earlier purchase) fell through Non-P&L detection straight
+   to `Income: Gross Receipts`, since "credit" alone wasn't a recognized
+   refund pattern. Added to `Non-P&L: Tax Refund / Reimbursement`.
+8. **The bare "WITHDRAWALS" section header was never recognized — every
+   withdrawal in every Regions statement was booked as income.** The
+   section-tracking logic required "WITHDRAWALS & DEBITS" or "WITHDRAWALS AND
+   DEBITS"; a real statement prints the bare word "WITHDRAWALS". That
+   condition never matched, so every `Card Purchase`/`PIN Purchase` line fell
+   through to the DEPOSIT default. This was masked in initial testing by bug
+   #9 below (a much larger phantom-withdrawal bug) inflating the withdrawal
+   side enough that the flip wasn't obviously visible. Fixed the header match
+   and added the real vocabulary (`card purchase`, `pin purchase`,
+   `recurring card transaction`) to `WITHDRAWAL_KEYWORDS` as defense-in-depth.
+9. **The "DAILY BALANCE SUMMARY" table was read as transactions.** Its rows
+   ("date balance date balance date balance", three pairs per line) have
+   exactly the shape the universal transaction regex looks for. One row
+   produced a **$27,647.88 phantom withdrawal**; across one statement this
+   fabricated over $150,000 in nonexistent expense. Now skipped outright as
+   its own tracked section.
+10. **Balance/rollup capture was gated behind `_is_summary()`, which several
+    real summary lines don't satisfy**, and separately was *always* consumed
+    by the section-header check first when the two matched the same
+    substring (`Total Deposits & Credits` vs. the `DEPOSITS & CREDITS`
+    header). Between the two, `total_deposits`, and bank-statement `Fees`/
+    `Checks` sub-totals were never reaching the reconciliation checker even
+    though every relevant transaction was captured correctly — a real
+    statement's reconciliation reported "Discrepancy" despite complete,
+    correct extraction. Fixed by running balance capture unconditionally,
+    before the section-header shortcuts. A parallel gap on credit card
+    statements (no `Payments`/`Transactions`/`Interest Charged` capture at
+    all) is fixed by a dedicated `_capture_credit_card_balances`.
+
+### New gaps found (not yet fixed)
+
+**Gap 11 — Uploading a P&L summary alongside the statements it summarizes
+double-counts the same activity**, even with the parser itself now correct.
+This is a scope/workflow issue, not a parsing bug: Lindsay's spec treats
+"client-provided totals" (of which a P&L export is one form) as an
+*alternative* input to raw statements, not a supplement. The UI should warn,
+or exclude one source, when both a P&L/totals file and bank/card statements
+covering the same period are uploaded together.
+
+**Gap 12 — Bank-statement gross receipts ($503,833.34) do not match the
+business's own QuickBooks P&L ($222,855.01 revenue for 2025).** This is over
+double. Not something to silently "fix" in code — it's exactly the kind of
+finding that belongs in front of a preparer: either QuickBooks is materially
+behind actual bank activity, or the bank-derived total still includes
+non-revenue deposits (loan draws, owner contributions, the payroll-company
+figures that were previously miscategorized) that need a closer look than
+this session's time allowed. Recommend a dedicated pass through the largest
+individual deposits before relying on the bank-derived figure.
+
+**Gap 13 — A handful of Capital One and Regions statements still show
+$200–$9,500 reconciliation discrepancies** (down from the $1,600–$150,000+
+range before today's fixes), mostly on months with card-number changes or
+unusual formatting. Each is now individually visible in the Reconciliation QC
+tab/sheet rather than silently absorbed into the totals — investigate
+per-statement rather than assuming a systemic cause, since the largest
+remaining sources (P&L, merged text, bare withdrawal headers, phantom daily
+balances) are now fixed.
