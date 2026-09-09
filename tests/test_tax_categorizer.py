@@ -124,3 +124,27 @@ def test_all_three_confidence_states_are_reachable():
         c.categorize_transaction("POS DEBIT 4412", "POS DEBIT 4412", -50.0, False)[1],
     }
     assert states == {"High Confidence", "Needs Review", "Unresolved"}
+
+
+# --- Sub-merchant "*" descriptors and apostrophe-free vendor names ---------
+
+def test_asterisk_separated_merchant_descriptor_still_matches():
+    """Card-network billing descriptors use "*" as a separator, not a space
+    (a real statement reads "Google *Ads9829", not "Google Ads")."""
+    cat, _, _ = TaxCategorizer().categorize_transaction(
+        "Recurring Card Transaction Google *Ads 9829",
+        "Recurring Card Transaction Google *Ads 9829",
+        -500.0, False
+    )
+    assert cat == "Line 8: Advertising"
+
+
+def test_apostrophe_free_vendor_name_still_matches_dictionary_entry():
+    """A real bank statement prints "O Reilly" (space, no apostrophe), not
+    "O'Reilly" -- the dictionary's own apostrophed spelling must still match."""
+    cat, _, _ = TaxCategorizer().categorize_transaction(
+        "PIN Purchase O Reilly 5307 North Port FL",
+        "PIN Purchase O Reilly 5307 North Port FL",
+        -25.0, False
+    )
+    assert cat == "Line 9: Car and truck expenses"

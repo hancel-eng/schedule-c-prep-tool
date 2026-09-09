@@ -161,8 +161,16 @@ CUSTOM_RULES_FILE = "custom_rules.json"
 # whole class of false positive (also guards "bp" inside unrelated words,
 # "rent" inside "current"/"different", "ink" inside "drink", etc.) without
 # having to hand-audit every keyword for length.
+def _keyword_pattern(kw: str) -> re.Pattern:
+    # Mirrors clean_payee_text's own apostrophe -> space substitution, so a
+    # dictionary entry spelled "o'reilly" still matches a statement that
+    # prints "O Reilly" (banks generally can't print an apostrophe at all).
+    normalized = re.escape(kw.replace("'", " "))
+    return re.compile(r'\b' + normalized + r'\b')
+
+
 _CATEGORY_PATTERNS = {
-    cat: [(kw, re.compile(r'\b' + re.escape(kw) + r'\b')) for kw in keywords]
+    cat: [(kw, _keyword_pattern(kw)) for kw in keywords]
     for cat, keywords in SCHEDULE_C_CATEGORIES.items()
 }
 
@@ -198,6 +206,19 @@ class TaxCategorizer:
         t = str(text).lower()
         t = re.sub(r'#\d+', '', t)
         t = re.sub(r'\b\d{4,}\b', '', t) # Remove long numbers/store IDs
+        # Card-network sub-merchant descriptors separate the merchant name from
+        # its billing descriptor with "*" instead of a space (e.g. Google's own
+        # statement text reads "Google *Ads9829", not "Google Ads"). Left as a
+        # literal asterisk, "google *ads" never matches the "google ads"
+        # keyword -- confirmed on a real statement, where this alone hid
+        # $9,921.87 of Advertising inside Uncategorized. Apostrophes become a
+        # space rather than being dropped: a bank statement generally can't
+        # print one at all and substitutes a space instead ("O Reilly", not
+        # "O'Reilly" or "OReilly"), so this matches the dictionary's own
+        # apostrophed spellings, which get the identical treatment when the
+        # keyword patterns are compiled below.
+        t = t.replace("'", " ")
+        t = re.sub(r'[*/_]+', ' ', t)
         t = re.sub(r'\s+', ' ', t).strip()
         return t
 
