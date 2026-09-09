@@ -3,6 +3,16 @@ import re
 from typing import List, Dict, Any
 from core.tax_categorizer import TaxCategorizer
 
+# Words that mark a row as income when the sheet has a single signed Amount
+# column. Used both to detect the sheet's sign convention and to classify rows
+# in sheets that carry no signs at all.
+INCOME_ROW_KEYWORDS = [
+    "deposit", "income", "revenue", "sales", "sale", "invoice", "receipts",
+    "client payment", "customer payment", "payment received", "gross receipts",
+    "fee income", "consulting income", "ingreso", "venta",
+]
+
+
 class SpreadsheetParser:
     """
     Parses client spreadsheets (Excel / CSV) and normalizes varied formats,
@@ -57,6 +67,11 @@ class SpreadsheetParser:
                     }
                 })
 
+                sign_convention = self._detect_sign_convention(
+                    df, amount_col, payee_col, cat_col
+                )
+                diagnostics[-1]["sign_convention"] = sign_convention
+
                 for idx, row in df.iterrows():
                     date_val = str(row[date_col]).strip() if date_col and pd.notna(row[date_col]) else "2026-01-01"
                     
@@ -84,15 +99,19 @@ class SpreadsheetParser:
                         is_deposit = True
                     elif amount_col and pd.notna(row[amount_col]):
                         raw_num = self._clean_number(row[amount_col])
-                        amount = raw_num
-                        
-                        # Determine if deposit or expense
-                        if amount > 0:
-                            # Check if positive number represents deposit or expense based on original category/payee
-                            is_dep_kw = any(kw in f"{payee_val} {orig_cat}".lower() for kw in ['deposit', 'income', 'revenue', 'sale', 'ingreso', 'vinta'])
-                            is_deposit = is_dep_kw
-                        else:
-                            is_deposit = False
+                        row_text = f"{payee_val} {orig_cat}".lower()
+                        is_income_kw = any(kw in row_text for kw in INCOME_ROW_KEYWORDS)
+
+                        # Normalize to the convention used everywhere else in the
+                        # tool: income positive, expenses negative.
+                        if sign_convention == "inverted":
+                            amount = -raw_num
+                        elif sign_convention == "unsigned":
+                            amount = abs(raw_num) if is_income_kw else -abs(raw_num)
+                        else:  # "standard"
+                            amount = raw_num
+
+                        is_deposit = amount > 0
 
                     if amount == 0.0:
                         continue
@@ -128,6 +147,63 @@ class SpreadsheetParser:
             "transaction_count": len(transactions),
             "diagnostics": diagnostics
         }
+
+    def _detect_sign_convention(self, df, amount_col, payee_col, cat_col) -> str:
+        """Work out how a single Amount column encodes income vs. expense.
+
+        Client sheets are inconsistent. Three conventions occur in practice:
+
+        - "standard"  income positive, expenses negative.
+        - "inverted"  expenses positive, income negative (a disbursements
+                      register). Reading this as standard books revenue as an
+                      expense, which moves net profit by twice the amount.
+        - "unsigned"  every value positive; income vs. expense is carried only
+                      by the row's own wording.
+
+        Detection is per sheet and decided by how the rows that *look* like
+        income are signed, since those are the rows the two conventions
+        disagree about.
+        """
+        if not amount_col:
+            return "standard"
+
+        income_values = []
+        other_values = []
+
+        for _, row in df.iterrows():
+            if amount_col not in row or pd.isna(row[amount_col]):
+                continue
+            val = self._clean_number(row[amount_col])
+            if val == 0.0:
+                continue
+
+            parts = []
+            for col in (payee_col, cat_col):
+                if col and col in row and pd.notna(row[col]):
+                    parts.append(str(row[col]))
+            row_text = " ".join(parts).lower()
+
+            if any(kw in row_text for kw in INCOME_ROW_KEYWORDS):
+                income_values.append(val)
+            else:
+                other_values.append(val)
+
+        all_values = income_values + other_values
+        if not all_values:
+            return "standard"
+
+        # Checked first: if nothing anywhere is negative, the sheet is not
+        # expressing direction numerically at all, whatever its income rows look
+        # like. Reading it as "standard" would turn every expense into income.
+        if all(v > 0 for v in all_values):
+            return "unsigned"
+
+        if income_values:
+            negative_income = sum(1 for v in income_values if v < 0)
+            if negative_income > len(income_values) / 2:
+                return "inverted"
+
+        return "standard"
 
     def _clean_number(self, val: Any) -> float:
         """Parses float from messy string (handling $, commas, parentheses for negatives)."""

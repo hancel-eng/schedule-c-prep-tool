@@ -11,6 +11,7 @@ from core.totals_parser import TotalsParser
 from core.tax_categorizer import TaxCategorizer, SCHEDULE_C_CATEGORIES
 from core.exception_analyzer import ExceptionAnalyzer
 from core.question_generator import ClientQuestionGenerator
+from core.reconciliation import ReconciliationChecker
 from core.excel_exporter import ExcelWorkpaperExporter
 
 # Page Configuration
@@ -100,6 +101,8 @@ if uploaded_files:
     all_transactions: List[Dict[str, Any]] = []
     months_found: List[int] = []
     diagnostics_log = []
+    reconciler = ReconciliationChecker()
+    reconciliation_results: List[Dict[str, Any]] = []
 
     for file_obj in unique_files:
         filename = file_obj.name
@@ -108,6 +111,9 @@ if uploaded_files:
             res = pdf_parser.parse_pdf(file_obj, filename)
             all_transactions.extend(res['transactions'])
             months_found.extend(res['months_found'])
+            reconciliation_results.append(reconciler.check_document(
+                filename, res['statement_summary'], res['transactions']
+            ))
             diagnostics_log.append({"file": filename, "type": "PDF", "count": len(res['transactions']), "details": res.get('diagnostics')})
 
         elif filename.lower().endswith(('.xlsx', '.xls', '.csv')):
@@ -123,9 +129,27 @@ if uploaded_files:
     else:
         st.markdown(f'<div class="alert-box"><b>12-Month Coverage Warning:</b> {coverage_info["status_message"]}</div>', unsafe_allow_html=True)
 
+    # Reconciliation QC: do the extracted transactions agree with what the
+    # statements themselves declare?
+    reconciliation_summary = reconciler.summarize(reconciliation_results)
+    recon_status = reconciliation_summary['status']
+
+    if recon_status == "Reconciled":
+        st.markdown(
+            f'<div class="success-box"><b>Reconciliation:</b> {reconciliation_summary["message"]}</div>',
+            unsafe_allow_html=True)
+    elif recon_status == "Discrepancy":
+        st.markdown(
+            f'<div class="alert-box"><b>Reconciliation Discrepancy:</b> {reconciliation_summary["message"]}</div>',
+            unsafe_allow_html=True)
+    else:
+        st.warning(f"**Reconciliation — {recon_status}:** {reconciliation_summary['message']}")
+
     # 3. Analyze Exceptions & QC
     analyzer = ExceptionAnalyzer()
-    exceptions = analyzer.analyze_exceptions(all_transactions)
+    exceptions = analyzer.analyze_exceptions(
+        all_transactions, de_minimis_threshold=de_minimis_threshold
+    )
 
     # 4. Generate Client Questions
     q_gen = ClientQuestionGenerator()
@@ -152,7 +176,7 @@ if uploaded_files:
     st.markdown("---")
     st.subheader("3. Preparer Dashboard & Financial Summary")
 
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
     with col1:
         st.metric("Gross Receipts (Line 1)", f"${gross_receipts:,.2f}")
     with col2:
@@ -161,15 +185,18 @@ if uploaded_files:
         st.metric("Net Profit / (Loss) (Line 31)", f"${net_profit:,.2f}")
     with col4:
         st.metric("Items Flagged for Review", exceptions['total_exception_count'], delta="Exceptions Queue", delta_color="inverse")
+    with col5:
+        st.metric("Reconciliation", recon_status, delta=f"{reconciliation_summary['reconciled_count']}/{reconciliation_summary['total_documents']} docs", delta_color="off")
 
     # Tabs for Data Inspection & Interactive Navigation
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab8, tab7 = st.tabs([
         "📊 Schedule C Summary",
         "📄 All Line Items",
         "🏬 Grouped by Vendor",
         "🚨 Exceptions Queue",
         "❓ Client Inquiry Questions",
         "🛑 Non-P&L Transfers",
+        "⚖️ Reconciliation QC",
         "🛠️ Debug & Diagnostics"
     ])
 
@@ -262,6 +289,27 @@ if uploaded_files:
         if exceptions['non_pnl_transfers']:
             st.dataframe(pd.DataFrame(exceptions['non_pnl_transfers'])[['date', 'payee', 'amount', 'category', 'source_file']], use_container_width=True, height=450)
 
+    with tab8:
+        st.markdown("#### Reconciliation Against Statement-Declared Totals")
+        st.caption(
+            "Each statement is checked twice: that its own balances foot, and that "
+            "the transactions extracted from it add up to the totals it declares. "
+            "A document with no declared balances is reported as Not Reconcilable "
+            "— never as a pass."
+        )
+        if reconciliation_results:
+            df_recon = pd.DataFrame(reconciliation_results)
+            st.dataframe(
+                df_recon[[
+                    'source_file', 'status', 'transaction_count',
+                    'declared_deposits', 'extracted_deposits',
+                    'declared_withdrawals', 'extracted_withdrawals', 'notes'
+                ]],
+                use_container_width=True
+            )
+        else:
+            st.info("No PDF statements were uploaded, so there is nothing to reconcile.")
+
     with tab7:
         st.markdown("#### File Ingestion & Parsing Diagnostics")
         st.json(diagnostics_log)
@@ -283,7 +331,8 @@ if uploaded_files:
         exceptions_dict=exceptions,
         questions=questions,
         coverage_info=coverage_info,
-        duplicates_info=duplicates_flagged
+        duplicates_info=duplicates_flagged,
+        reconciliation_summary=reconciliation_summary
     )
 
     st.download_button(

@@ -49,6 +49,23 @@ def generate_samples():
         c.drawString(420, y, r[2])
         y -= 20
 
+    # Account summary block. Real statements declare these totals, and the
+    # workpaper reconciles the extracted transactions against them, so the
+    # sample carries them too.
+    y -= 20
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(50, y, "ACCOUNT SUMMARY")
+    c.setFont("Helvetica", 10)
+    for label, value in [
+        ("Beginning Balance", "$2,000.00"),
+        ("Total Deposits", "$3,500.00"),
+        ("Total Withdrawals", "$1,542.59"),
+        ("Ending Balance", "$3,957.41"),
+    ]:
+        y -= 18
+        c.drawString(50, y, label)
+        c.drawString(420, y, value)
+
     c.save()
     print("Created sample_data/Bank_Statement_Jan_2026.pdf")
 

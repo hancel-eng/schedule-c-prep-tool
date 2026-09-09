@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "autoPort": true,
+  "configurations": [
+    {
+      "name": "schedule-c-tool",
+      "runtimeExecutable": "streamlit",
+      "runtimeArgs": [
+        "run",
+        "app.py",
+        "--server.headless",
+        "true"
+      ],
+      "port": 8501
+    }
+  ]
+}

@@ -45,3 +45,82 @@ def test_exception_analyzer_fixed_asset_and_personal():
     res = analyzer.analyze_exceptions(txs)
     assert len(res["potential_fixed_assets"]) == 1
     assert len(res["potential_personal"]) == 1
+
+
+# --- Regression tests for Non-P&L detection -------------------------------
+# Money movement wrongly booked to the P&L directly misstates net profit, so
+# these use real statement wordings rather than the idealized strings the
+# original keyword list was written against.
+
+@pytest.mark.parametrize("description", [
+    "CREDIT CARD AUTOMATIC PAYMENT",
+    "CAPITAL ONE MOBILE PYMT",
+    "PAYMENT - THANK YOU",
+    "ELECTRONIC PAYMENT THANK YOU",
+    "CHASE CREDIT CRD AUTOPAY",
+    "CARD PYMT 1221",
+])
+def test_credit_card_payments_are_excluded_from_pnl(description):
+    cat, state, _ = TaxCategorizer().categorize_transaction(
+        payee=description, description=description, amount=-450.0, is_deposit=False
+    )
+    assert cat == "Non-P&L: Credit Card Payment"
+    assert state == "High Confidence"
+
+
+@pytest.mark.parametrize("description,expected", [
+    ("ONLINE TRANSFER TO SAVINGS XXX44", "Non-P&L: Internal Transfer"),
+    ("Transfer from Chase Business Checking", "Non-P&L: Internal Transfer"),
+    ("OWNERS DRAW", "Non-P&L: Owner Draw / Contribution"),
+    ("Distribution to Member", "Non-P&L: Owner Draw / Contribution"),
+    ("SBA LOAN PROCEEDS", "Non-P&L: Loan Proceeds / Repayment"),
+    ("IRS TREAS 310 TAX REFUND", "Non-P&L: Tax Refund / Reimbursement"),
+])
+def test_non_pnl_activity_is_excluded(description, expected):
+    cat, _, _ = TaxCategorizer().categorize_transaction(
+        payee=description, description=description, amount=-1000.0, is_deposit=False
+    )
+    assert cat == expected
+
+
+@pytest.mark.parametrize("description,expected", [
+    # A contractor payment is a real expense, not a card payment.
+    ("Upwork Contractor Payment", "Line 11: Contract labor"),
+    # A finance charge is real Line 16b interest, not a summary row.
+    ("PURCHASE INTEREST CHARGE", "Line 16b: Other interest"),
+    ("Chevron Gas Station", "Line 9: Car and truck expenses"),
+])
+def test_real_expenses_are_not_swallowed_by_non_pnl_patterns(description, expected):
+    cat, _, _ = TaxCategorizer().categorize_transaction(
+        payee=description, description=description, amount=-100.0, is_deposit=False
+    )
+    assert cat == expected
+
+
+# --- Confidence states -----------------------------------------------------
+
+def test_opaque_description_is_unresolved_not_guessed():
+    _, state, score = TaxCategorizer().categorize_transaction(
+        payee="POS DEBIT 4412", description="POS DEBIT 4412",
+        amount=-88.0, is_deposit=False
+    )
+    assert state == "Unresolved"
+    assert score == 0.0
+
+
+def test_unmatched_but_readable_vendor_is_needs_review():
+    _, state, _ = TaxCategorizer().categorize_transaction(
+        payee="Bob Smith Hardware", description="Bob Smith Hardware",
+        amount=-88.0, is_deposit=False
+    )
+    assert state == "Needs Review"
+
+
+def test_all_three_confidence_states_are_reachable():
+    c = TaxCategorizer()
+    states = {
+        c.categorize_transaction("Chevron", "Chevron", -50.0, False)[1],
+        c.categorize_transaction("Bob Smith Hardware", "Bob Smith Hardware", -50.0, False)[1],
+        c.categorize_transaction("POS DEBIT 4412", "POS DEBIT 4412", -50.0, False)[1],
+    }
+    assert states == {"High Confidence", "Needs Review", "Unresolved"}

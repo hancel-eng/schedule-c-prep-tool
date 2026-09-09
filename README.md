@@ -27,7 +27,7 @@ messy client documents
 
 ## What it produces
 
-Every run outputs a formatted `.xlsx` workbook with five sheets:
+Every run outputs a formatted `.xlsx` workbook with six sheets:
 
 | Sheet | Contents |
 |---|---|
@@ -36,15 +36,33 @@ Every run outputs a formatted `.xlsx` workbook with five sheets:
 | **Non-P&L & Transfers** | Everything excluded from the P&L, with the reason |
 | **Exceptions Queue** | Potential personal expenses and potential fixed assets, each with an audit note |
 | **Client Questions** | Auto-generated inquiry checklist with a blank response column |
+| **Reconciliation QC** | Per-statement reconciliation, 12-month coverage, duplicate files skipped |
 
 A Streamlit dashboard shows the same data interactively before export
 (searchable line items, vendor grouping, exception queues, parsing diagnostics).
 
 ### Confidence labels
 
-Every transaction carries `High Confidence`, `Needs Review`, or `Unresolved`.
-The categorizer never guesses silently — anything it cannot match falls to
-`Needs Review` and lands in the exception queue.
+Every transaction carries one of three states, and the categorizer never guesses
+silently:
+
+- **High Confidence** — matched a Non-P&L pattern, a custom rule, or a keyword.
+- **Needs Review** — no match, but the description names a vendor a preparer can
+  recognize and resolve.
+- **Unresolved** — the description carries no vendor identity at all
+  (`POS DEBIT 4412`), so there is nothing to resolve it from.
+
+Anything that is not High Confidence lands in the exception queue.
+
+### Reconciliation
+
+Each statement is checked twice: that its own declared balances foot
+(`beginning + deposits − withdrawals == ending`), and that the transactions
+actually extracted from it add up to the totals it declares. The second check is
+what catches a parser silently dropping rows.
+
+A document that declares no balances is reported as **Not Reconcilable**, never
+as a pass — an unverifiable statement is a finding the preparer needs to see.
 
 ### Excluded from income and expense totals
 

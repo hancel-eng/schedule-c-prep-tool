@@ -44,14 +44,55 @@ class FinancialDocumentData(BaseModel):
 CreditCardStatementData = FinancialDocumentData
 BankStatementData = FinancialDocumentData
 
+# Statement header/footer lines to skip. Deliberately excludes bare "finance
+# charge" and "interest charge": on a credit card statement those are genuine
+# Line 16b interest expense transactions, not summary rows. Only the "total ..."
+# rollups below are treated as summary.
 SUMMARY_TERMS = [
-    "available credit", "credit limit", "previous balance", "new balance", 
-    "payment due date", "minimum payment", "statement period", "account summary", 
-    "page ", "daily balance summary", "total fees charged", "total interest charged",
-    "finance charge", "rewards summary", "cash advance credit limit", "past due amount",
-    "ending balance", "beginning balance", "total deposits", "total withdrawals",
-    "payments and credits", "transactions fees", "total transactions for"
+    "available credit", "credit limit", "previous balance", "new balance",
+    "payment due date", "minimum payment", "statement period", "account summary",
+    "daily balance summary", "total fees charged", "total interest charged",
+    "total finance charge", "rewards summary", "cash advance credit limit",
+    "past due amount", "ending balance", "beginning balance", "total deposits",
+    "total withdrawals", "payments and credits", "transactions fees",
+    "total transactions for"
 ]
+
+# Summary lines that need anchoring so they cannot match a vendor description
+# (a plain "page " substring matched payees such as "PAGEANT SUPPLY CO").
+SUMMARY_REGEXES = [
+    r"^page\s+\d+",
+    r"\bpage\s+\d+\s+of\s+\d+\b",
+    r"^\s*total\b",
+    r"^\s*subtotal\b",
+]
+
+# Statement balance labels. These lines are skipped as transactions (they are in
+# SUMMARY_TERMS) but their amounts are captured so the workpaper can reconcile
+# what was extracted against what the statement itself declares -- the strongest
+# check that the regex parsers did not silently drop transactions.
+BALANCE_PATTERNS = {
+    "beginning_balance": [
+        r"\b(?:beginning|previous|opening|prior)\s+(?:statement\s+)?balance\b",
+        r"\bbalance\s+(?:forward|last\s+statement)\b",
+    ],
+    "ending_balance": [
+        r"\b(?:ending|new|closing|current)\s+balance\b",
+        r"\bbalance\s+this\s+statement\b",
+    ],
+    "total_deposits": [
+        r"\btotal\s+(?:deposits|credits|additions)\b",
+        r"\bdeposits?\s+(?:and|&)\s+(?:credits|additions)\b",
+        r"\bpayments?\s+(?:and|&)\s+credits\b",
+        r"\btotal\s+payments?\s+(?:and|&)\s+credits\b",
+    ],
+    "total_withdrawals": [
+        r"\btotal\s+(?:withdrawals|debits|subtractions)\b",
+        r"\bwithdrawals?\s+(?:and|&)\s+debits\b",
+        r"\b(?:purchases|charges)\s+(?:and|&)\s+(?:adjustments|debits)\b",
+        r"\btotal\s+(?:purchases|charges)\b",
+    ],
+}
 
 DEPOSIT_KEYWORDS = [
     "deposit", "dir dep", "direct deposit", "wire recv", "credit refund", "merchant deposit", "square inc", "stripe deposit", "gross sales", "revenue"
@@ -181,6 +222,7 @@ class BankPDFParser:
                     for line in lines:
                         clean_line = line.strip()
                         if self._is_summary(clean_line):
+                            self._capture_balances(clean_line, data)
                             continue
 
                         m = re.search(r'(\d{1,2}/\d{1,2}|[A-Z][a-z]{2}\s+\d{1,2})\s+(?:(\d{1,2}/\d{1,2}|[A-Z][a-z]{2}\s+\d{1,2})\s+)?(.+?)\s+([+-]?\$?\s*\(?\d{1,3}(?:,\d{3})*\.\d{2}\)?-?)$', clean_line)
@@ -259,6 +301,7 @@ class BankPDFParser:
                             continue
 
                         if self._is_summary(clean_line):
+                            self._capture_balances(clean_line, data)
                             continue
 
                         # Check for Check PDF format
@@ -369,6 +412,31 @@ class BankPDFParser:
         data.transactions = transactions
         return data
 
+    def _capture_balances(self, line_clean: str, data: FinancialDocumentData) -> None:
+        """Record a statement-declared balance or rollup total, if this line is one.
+
+        First occurrence wins: banks repeat "Ending Balance" in per-page footers
+        and daily balance tables, and only the account summary value is
+        authoritative.
+        """
+        line_lower = line_clean.lower()
+
+        for field, patterns in BALANCE_PATTERNS.items():
+            if getattr(data, field):
+                continue
+            if not any(re.search(pat, line_lower) for pat in patterns):
+                continue
+
+            amounts = re.findall(
+                r'[+-]?\$?\s*\(?\d{1,3}(?:,\d{3})*\.\d{2}\)?-?', line_clean
+            )
+            if not amounts:
+                continue
+
+            value = self._clean_amount(amounts[-1])
+            if value != 0.0:
+                setattr(data, field, abs(value))
+
     def _clean_amount(self, val: str) -> float:
         if not val:
             return 0.0
@@ -385,6 +453,9 @@ class BankPDFParser:
         line_lower = line_clean.lower()
         for term in SUMMARY_TERMS:
             if term in line_lower:
+                return True
+        for pattern in SUMMARY_REGEXES:
+            if re.search(pattern, line_lower):
                 return True
         return False
 

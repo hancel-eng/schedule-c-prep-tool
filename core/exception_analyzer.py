@@ -20,9 +20,13 @@ class ExceptionAnalyzer:
     for preparer inspection in 100% English.
     """
 
-    def analyze_exceptions(self, transactions: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def analyze_exceptions(self, transactions: List[Dict[str, Any]],
+                           de_minimis_threshold: float = DE_MINIMIS_THRESHOLD) -> Dict[str, Any]:
         """
         Categorizes transactions into exception review queues.
+
+        de_minimis_threshold defaults to the IRS safe harbor but is overridable
+        so the sidebar control actually takes effect.
         """
         uncategorized = []
         potential_personal = []
@@ -57,10 +61,10 @@ class ExceptionAnalyzer:
 
             # 3. Potential Fixed Assets / Capital Expenditures (> $2,500 threshold or asset keywords)
             is_asset_kw = any(kw in payee_lower or kw in desc_lower for kw in CAPITAL_ASSET_KEYWORDS)
-            if (amt >= DE_MINIMIS_THRESHOLD or is_asset_kw) and not tx.get("is_deposit"):
+            if (amt >= de_minimis_threshold or is_asset_kw) and not tx.get("is_deposit"):
                 potential_fixed_assets.append({
                     **tx,
-                    "reason": f"Amount ${amt:,.2f} exceeds ${DE_MINIMIS_THRESHOLD:,.0f} threshold or contains capital equipment keywords. Evaluate Section 179 / Depreciation."
+                    "reason": f"Amount ${amt:,.2f} exceeds ${de_minimis_threshold:,.0f} threshold or contains capital equipment keywords. Evaluate Section 179 / Depreciation."
                 })
 
             # 4. Non-P&L Transfers & Credit Card Payments

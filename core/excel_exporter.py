@@ -12,7 +12,8 @@ class ExcelWorkpaperExporter:
 
     def generate_workpaper(self, client_name: str, tax_year: int, transactions: List[Dict[str, Any]],
                            exceptions_dict: Dict[str, Any], questions: List[Dict[str, str]],
-                           coverage_info: Dict[str, Any], duplicates_info: List[Dict[str, str]]) -> io.BytesIO:
+                           coverage_info: Dict[str, Any], duplicates_info: List[Dict[str, str]],
+                           reconciliation_summary: Dict[str, Any] = None) -> io.BytesIO:
         """
         Creates an openpyxl Workbook and returns a BytesIO buffer.
         """
@@ -55,7 +56,8 @@ class ExcelWorkpaperExporter:
         meta_data = [
             ("Client Name:", client_name, "Deduplication Rule:", "Strict Filename Verification (Active)"),
             ("Tax Year:", tax_year, "12-Month Statement Coverage:", coverage_info.get("status_message", "N/A")),
-            ("Prepared By:", "GoSpectr Schedule C Tool", "Total Exceptions Flagged:", exceptions_dict.get("total_exception_count", 0))
+            ("Prepared By:", "GoSpectr Schedule C Tool", "Total Exceptions Flagged:", exceptions_dict.get("total_exception_count", 0)),
+            ("", "", "Reconciliation Status:", (reconciliation_summary or {}).get("message", "Not run"))
         ]
 
         for r_idx, row_vals in enumerate(meta_data, start=4):
@@ -261,6 +263,58 @@ class ExcelWorkpaperExporter:
             ws5.cell(row=r_idx, column=5, value=q.get('amount')).font = normal_font
             ws5.cell(row=r_idx, column=6, value=q.get('question')).font = normal_font
             ws5.cell(row=r_idx, column=7, value=q.get('client_response')).font = normal_font
+
+        # ----------------------------------------------------
+        # TAB 6: RECONCILIATION QC
+        # ----------------------------------------------------
+        ws6 = wb.create_sheet(title="Reconciliation QC")
+        ws6.views.sheetView[0].showGridLines = True
+
+        recon = reconciliation_summary or {}
+
+        ws6.cell(row=1, column=1, value="RECONCILIATION & COMPLETENESS CHECKS").font = title_font
+        ws6.cell(row=2, column=1, value=recon.get("message", "Reconciliation was not run for this engagement.")).font = subtitle_font
+        ws6.cell(row=3, column=1, value="12-Month Coverage:").font = bold_font
+        ws6.cell(row=3, column=2, value=coverage_info.get("status_message", "N/A")).font = normal_font
+        ws6.cell(row=4, column=1, value="Duplicate Files Skipped:").font = bold_font
+        ws6.cell(row=4, column=2, value=len(duplicates_info or [])).font = normal_font
+
+        recon_headers = [
+            "Source File", "Status", "Txns Extracted", "Beginning Balance",
+            "Ending Balance", "Declared Deposits", "Extracted Deposits",
+            "Declared Withdrawals", "Extracted Withdrawals", "Notes"
+        ]
+        for c_idx, h_text in enumerate(recon_headers, start=1):
+            cell = ws6.cell(row=6, column=c_idx, value=h_text)
+            cell.font = header_font
+            cell.fill = header_fill
+
+        money_cols = (4, 5, 6, 7, 8, 9)
+        for r_idx, item in enumerate(recon.get("results", []), start=7):
+            values = [
+                item.get("source_file"), item.get("status"), item.get("transaction_count"),
+                item.get("beginning_balance"), item.get("ending_balance"),
+                item.get("declared_deposits"), item.get("extracted_deposits"),
+                item.get("declared_withdrawals"), item.get("extracted_withdrawals"),
+                item.get("notes"),
+            ]
+            for c_idx, value in enumerate(values, start=1):
+                cell = ws6.cell(row=r_idx, column=c_idx, value=value)
+                cell.font = normal_font
+                if c_idx in money_cols:
+                    cell.number_format = "$#,##0.00"
+
+            status_cell = ws6.cell(row=r_idx, column=2)
+            status_cell.font = bold_font
+            if item.get("status") == "Reconciled":
+                status_cell.fill = green_fill
+            elif item.get("status") == "Discrepancy":
+                status_cell.fill = alert_fill
+            else:
+                status_cell.fill = sub_fill
+
+        if not recon.get("results"):
+            ws6.cell(row=7, column=1, value="No PDF statements were reconciled in this run.").font = normal_font
 
         # Auto-adjust column widths for all worksheets
         for ws in wb.worksheets:

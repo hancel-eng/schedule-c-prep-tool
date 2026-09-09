@@ -81,23 +81,67 @@ SCHEDULE_C_CATEGORIES = {
     ]
 }
 
+# Non-P&L patterns. These are the tool's main safeguard against counting money
+# movement as income or expense, so they are written as token-gap regexes rather
+# than fixed substrings: real statement descriptions insert words between the
+# tokens (e.g. "CREDIT CARD AUTOMATIC PAYMENT"). Matched before anything else.
 NON_PNL_PATTERNS = {
     "Non-P&L: Credit Card Payment": [
-        r"capital one mobile pymt", r"capital one pymt", r"credit card payment", r"auto pay credit card", 
-        r"chase credit crd", r"amex payment", r"citi card pymt", r"payment thank you", r"mobile pymt", r"card pymt"
+        r"\bcredit\s+card\s+(?:\w+\s+){0,3}(?:payment|pymt|pmt|pay)\b",
+        r"\bcard\s+(?:\w+\s+){0,2}(?:payment|pymt|pmt)\b",
+        r"\b(?:payment|pymt|pmt)\b[\W_]*(?:\w+[\W_]+){0,2}thank\s*you\b",
+        r"\bmobile\s+(?:payment|pymt|pmt)\b",
+        r"\bauto\s*pay\b",
+        r"\bautopay\b",
+        r"\bepay\b",
+        r"\b(?:capital\s+one|chase|amex|american\s+express|citi|discover|"
+        r"synchrony|barclay|wells\s+fargo|bank\s+of\s+america)\s+"
+        r"(?:\w+\s+){0,3}(?:payment|pymt|pmt)\b",
     ],
     "Non-P&L: Internal Transfer": [
-        r"transfer to", r"transfer from", r"online transfer", r"zelle transfer", r"internal xfer", r"bkofamerica atmosphere transfer"
+        r"\btransfer\s+(?:to|from)\b",
+        r"\b(?:online|internal|book|funds?|acct|account)\s+(?:\w+\s+){0,2}"
+        r"(?:transfer|xfer|trnsfr|tsfr)\b",
+        r"\b(?:transfer|xfer|trnsfr|tsfr)\s+(?:\w+\s+){0,2}"
+        r"(?:to|from)\s+(?:checking|savings|acct|account)\b",
+        r"\bzelle\s+(?:\w+\s+){0,2}transfer\b",
+        r"\bbetween\s+accounts\b",
     ],
     "Non-P&L: Owner Draw / Contribution": [
-        r"owner draw", r"partner distribution", r"capital contribution", r"owner equity", r"personal draw", r"shareholder distribution"
+        r"\bowner'?s?\s+(?:draw|equity|contribution|withdrawal)\b",
+        r"\bpersonal\s+draw\b",
+        r"\bmember\s+(?:draw|distribution|contribution)\b",
+        r"\bpartner\s+(?:draw|distribution|contribution)\b",
+        r"\bshareholder\s+distribution\b",
+        r"\bcapital\s+contribution\b",
+        r"\bdistribution\s+to\s+(?:owner|member|partner)\b",
     ],
     "Non-P&L: Loan Proceeds / Repayment": [
-        r"sba loan", r"patterson loan", r"principal payment", r"line of credit draw"
+        r"\bsba\s+loan\b",
+        r"\bloan\s+(?:\w+\s+){0,2}"
+        r"(?:proceeds|payment|pymt|repayment|disbursement|advance|deposit)\b",
+        r"\b(?:principal|note)\s+payment\b",
+        r"\bnote\s+payable\b",
+        r"\bline\s+of\s+credit\b",
+        r"\bloc\s+(?:draw|advance)\b",
+        r"\bmerchant\s+cash\s+advance\b",
     ],
     "Non-P&L: Tax Refund / Reimbursement": [
-        r"irs treas refund", r"state tax refund", r"vendor refund"
-    ]
+        r"\brefund\b",
+        r"\breimbursement\b",
+        r"\breimb\b",
+        r"\b(?:irs|state)\s+(?:\w+\s+){0,2}refund\b",
+    ],
+}
+
+# Tokens that appear in statement descriptions but identify no vendor. A
+# description made up of only these (plus stripped digits) is Unresolved, not
+# merely low confidence -- there is nothing for a preparer to recognize.
+GENERIC_DESCRIPTION_TOKENS = {
+    "purchase", "debit", "credit", "card", "pos", "ach", "eft", "trans",
+    "transaction", "ref", "id", "no", "num", "date", "auth", "seq", "item",
+    "misc", "other", "charge", "chg", "xx", "xxx", "xxxx", "na", "nan", "none",
+    "unknown", "check", "chk", "draft", "withdrawal", "payment", "pmt", "pymt",
 }
 
 CUSTOM_RULES_FILE = "custom_rules.json"
@@ -177,5 +221,21 @@ class TaxCategorizer:
             state = "High Confidence" if matched_score >= 0.85 else "Needs Review"
             return matched_cat, state, matched_score
 
-        # 5. Default Unresolved Fallback for Credit Card & Bank Expenses
+        # 5. No keyword matched. Never guess a category -- distinguish an item a
+        # preparer can plausibly resolve from the payee text ("Needs Review")
+        # from one where the source gives nothing to go on ("Unresolved").
+        if self._is_opaque_payee(clean_text):
+            return "Line 27a: Other expenses (Uncategorized)", "Unresolved", 0.0
+
         return "Line 27a: Other expenses (Uncategorized)", "Needs Review", 0.40
+
+    def _is_opaque_payee(self, clean_text: str) -> bool:
+        """True when the description carries no usable vendor identity.
+
+        clean_payee_text has already stripped store IDs and long digit runs, so
+        what remains is either a readable vendor name or noise.
+        """
+        alpha_tokens = [t for t in re.findall(r"[a-z]{2,}", clean_text)
+                        if t not in GENERIC_DESCRIPTION_TOKENS
+                        and not re.fullmatch(r"x+", t)]
+        return not alpha_tokens
