@@ -1,0 +1,32 @@
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Local runtime state (client-specific categorization rules)
+custom_rules.json
+
+# Client data — never commit real client financial documents
+client_data/
+uploads/
+*.xlsx
+*.xls
+*.csv
+*.pdf
+!sample_data/*.xlsx
+!sample_data/*.pdf
+
+# Generated workpapers
+Schedule_C_Workpaper_*.xlsx
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
