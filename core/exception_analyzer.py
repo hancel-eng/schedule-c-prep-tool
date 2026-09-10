@@ -1,3 +1,4 @@
+import re
 from typing import List, Dict, Any
 
 PERSONAL_EXPENSE_KEYWORDS = [
@@ -11,6 +12,19 @@ CAPITAL_ASSET_KEYWORDS = [
     "macbook", "laptop", "desktop", "server", "iphone", "ipad",
     "machinery", "equipment", "vehicle", "truck", "trailer", "generator", "hvac"
 ]
+
+# Compiled once, not per transaction. A plain `kw in text` substring check
+# false-positives on short/generic keywords -- flagged in a client meeting
+# after a real transaction, "Extra Space" (self-storage, correctly booked to
+# Line 20b Rent), also landed in the personal-expense queue because "spa" is
+# a substring of "space". Same fix already applied to the tax categorizer's
+# own keyword dictionary in core/tax_categorizer.py; mirrored here.
+def _keyword_pattern(kw: str) -> re.Pattern:
+    return re.compile(r'\b' + re.escape(kw) + r'\b')
+
+
+_PERSONAL_EXPENSE_PATTERNS = [(kw, _keyword_pattern(kw)) for kw in PERSONAL_EXPENSE_KEYWORDS]
+_CAPITAL_ASSET_PATTERNS = [(kw, _keyword_pattern(kw)) for kw in CAPITAL_ASSET_KEYWORDS]
 
 DE_MINIMIS_THRESHOLD = 2500.0 # IRS De Minimis Safe Harbor Threshold
 
@@ -51,8 +65,8 @@ class ExceptionAnalyzer:
                 })
 
             # 2. Potential Personal Expenses
-            for kw in PERSONAL_EXPENSE_KEYWORDS:
-                if kw in payee_lower or kw in desc_lower:
+            for kw, pattern in _PERSONAL_EXPENSE_PATTERNS:
+                if pattern.search(payee_lower) or pattern.search(desc_lower):
                     potential_personal.append({
                         **tx,
                         "reason": f"Matched personal keyword '{kw}'. Verify business purpose."
@@ -60,7 +74,8 @@ class ExceptionAnalyzer:
                     break
 
             # 3. Potential Fixed Assets / Capital Expenditures (> $2,500 threshold or asset keywords)
-            is_asset_kw = any(kw in payee_lower or kw in desc_lower for kw in CAPITAL_ASSET_KEYWORDS)
+            is_asset_kw = any(pattern.search(payee_lower) or pattern.search(desc_lower)
+                              for _, pattern in _CAPITAL_ASSET_PATTERNS)
             if (amt >= de_minimis_threshold or is_asset_kw) and not tx.get("is_deposit"):
                 potential_fixed_assets.append({
                     **tx,
