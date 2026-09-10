@@ -14,11 +14,12 @@ from core.question_generator import ClientQuestionGenerator
 from core.reconciliation import ReconciliationChecker
 from core.excel_exporter import ExcelWorkpaperExporter
 from core.answer_applier import apply_client_answers, ANSWER_OPTIONS, uncategorized_expense_answer_options
+from theme import CSS, render_progress_steps
 
 # Bumped on every meaningful change to this file, so whoever is looking at the
 # app can tell which version is running just by glancing at the sidebar --
 # there is no separate deploy/build pipeline that would otherwise show that.
-APP_VERSION = "v1"
+APP_VERSION = "v2"
 
 # Page Configuration
 st.set_page_config(
@@ -28,27 +29,22 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom Styling
-st.markdown("""
-    <style>
-    .main-header { font-size: 2.2rem; color: #1F4E78; font-weight: 700; margin-bottom: 0.2rem; }
-    .sub-header { font-size: 1.1rem; color: #595959; margin-bottom: 1.5rem; }
-    .alert-box { background-color: #FCE4D6; padding: 1rem; border-radius: 8px; border-left: 4px solid #C00000; }
-    .success-box { background-color: #E2EFDA; padding: 1rem; border-radius: 8px; border-left: 4px solid #385723; }
-    </style>
-""", unsafe_allow_html=True)
+# Visual theme only -- injected once, here, for the whole script run. See
+# theme.py; nothing below this line should add another <style> block.
+st.markdown(CSS, unsafe_allow_html=True)
 
-# Title & Description
-st.markdown('<div class="main-header">Schedule C Intake & Tax Prep Workpaper Tool</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-header">Turns bank/credit card statements into a client question list and an audit-ready Schedule C workpaper.</div>', unsafe_allow_html=True)
+# Title & Description -- native title/caption so the theme's h1 styling and
+# secondary-text color apply without a bespoke CSS class per element.
+st.title("Schedule C Intake & Tax Prep Workpaper Tool")
+st.caption("Turns bank/credit card statements into a client question list and an audit-ready Schedule C workpaper.")
 
 # Sidebar Configuration
-st.sidebar.header("📋 Client & Tax Year Metadata")
+st.sidebar.header("Client & Tax Year Metadata")
 client_name = st.sidebar.text_input("Client Name / Business Name", value="Acme Consulting LLC")
 tax_year = st.sidebar.number_input("Tax Year", value=2026, step=1)
 
 st.sidebar.markdown("---")
-st.sidebar.header("⚙️ De Minimis & Question Rules")
+st.sidebar.header("De Minimis & Question Rules")
 de_minimis_threshold = st.sidebar.number_input("Fixed Asset Threshold ($)", value=2500.0, step=100.0)
 materiality_threshold = st.sidebar.number_input(
     "Client Question Materiality Threshold ($)", value=0.0, step=1.0,
@@ -84,11 +80,33 @@ if uploaded_files:
     needs_reparse = st.session_state.get("upload_signature") != upload_signature
 
     # A visible, step-by-step account of what the app is doing, so a 34-file
-    # upload doesn't look like a frozen page -- collapses to a one-line
-    # summary once done, but stays on screen (unlike a spinner, which
-    # vanishes) so there's a record of what just happened.
-    with st.status("Procesando documentos…", expanded=True) as status:
+    # upload doesn't look like a frozen page. st.container(key=...) is what
+    # makes theme.py's ".st-key-ts_progress_panel" selector a real parent in
+    # the DOM (unlike a raw markdown <div>, which would render as a sibling
+    # of the widgets below it, not a wrapper around them).
+    with st.container(key="ts_progress_panel"):
+        steps_slot = st.empty()
+        file_progress_slot = st.empty()
+
+        def mark_steps(current_key, meta=""):
+            """Renders the 4-step list: everything before current_key is
+            'done', current_key is 'active' (with meta as its status line),
+            everything after is 'pending'. current_key=None marks all done."""
+            order = ["extract", "coverage", "reconcile", "questions"]
+            state, reached = {}, current_key is None
+            for k in order:
+                if k == current_key:
+                    state[k] = "active"
+                elif not reached:
+                    state[k] = "done"
+                else:
+                    state[k] = "pending"
+                if k == current_key:
+                    reached = True
+            render_progress_steps(steps_slot, state, active_meta=meta)
+
         if needs_reparse:
+            mark_steps("extract")
             dedup = FilenameDeduplicator()
             unique_files, duplicates_flagged = dedup.process_files(uploaded_files)
 
@@ -102,14 +120,10 @@ if uploaded_files:
             reconciler = ReconciliationChecker()
             reconciliation_results: List[Dict[str, Any]] = []
 
-            st.write(f"📄 Extrayendo y categorizando {len(unique_files)} archivo(s)…")
-            progress_bar = st.progress(0.0)
             for i, file_obj in enumerate(unique_files):
                 filename = file_obj.name
-                progress_bar.progress(
-                    i / len(unique_files),
-                    text=f"Procesando {i + 1} de {len(unique_files)} — {filename}"
-                )
+                mark_steps("extract", f"{filename} · archivo {i + 1} de {len(unique_files)}")
+                file_progress_slot.progress(i / len(unique_files))
 
                 if filename.lower().endswith('.pdf'):
                     res = pdf_parser.parse_pdf(file_obj, filename)
@@ -125,15 +139,13 @@ if uploaded_files:
                     parsed_transactions.extend(res['transactions'])
                     diagnostics_log.append({"file": filename, "type": "Spreadsheet", "count": len(res['transactions']), "details": res.get('diagnostics')})
 
-            progress_bar.progress(1.0, text="Extracción completa")
-            progress_bar.empty()
-            st.write(f"✅ {len(parsed_transactions):,} transacciones extraídas de {len(unique_files)} archivo(s)")
+            file_progress_slot.empty()
 
+            mark_steps("coverage", f"{len(parsed_transactions):,} transacciones de {len(unique_files)} archivo(s)")
             coverage_info = pdf_parser.check_12_month_coverage(months_found)
-            st.write(f"✅ Cobertura verificada — {coverage_info['status_message']}")
 
+            mark_steps("reconcile", coverage_info['status_message'])
             reconciliation_summary = reconciler.summarize(reconciliation_results)
-            st.write(f"✅ Reconciliación: {reconciliation_summary['status']}")
 
             # A genuinely new set of files starts a fresh client -- any prior
             # corrections belonged to the previous upload and don't carry over.
@@ -147,7 +159,7 @@ if uploaded_files:
             st.session_state.duplicates_flagged = duplicates_flagged
             st.session_state.unique_file_count = len(unique_files)
         else:
-            st.write(f"✅ Usando los {st.session_state.unique_file_count} archivo(s) ya procesados en esta sesión")
+            mark_steps("questions", f"Usando los {st.session_state.unique_file_count} archivo(s) ya procesados en esta sesión")
 
         # Every rerun (fresh parse or not) reads from session_state, so an
         # applied client answer is what the rest of the page actually sees.
@@ -159,6 +171,8 @@ if uploaded_files:
         duplicates_flagged = st.session_state.duplicates_flagged
         correction_log = st.session_state.correction_log
         recon_status = reconciliation_summary['status']
+
+        mark_steps("questions", reconciliation_summary['status'])
 
         # Recomputed fresh every run, straight from the current (possibly
         # client-corrected) transaction list, so an applied answer's effect
@@ -185,24 +199,19 @@ if uploaded_files:
             q for q in questions
             if not (q["category"] == "Form 1099 Verification" and q.get("contractor") in resolved_contractors)
         ]
-        st.write(f"✅ {len(questions)} pregunta(s) para el cliente")
 
-        status.update(
-            label=f"Listo — {len(questions)} pregunta(s) para el cliente",
-            state="complete", expanded=False
-        )
+        mark_steps(None)  # all 4 steps done
+        st.caption(f"{len(questions)} pregunta(s) para el cliente")
 
     if duplicates_flagged:
         for dup in duplicates_flagged:
-            st.warning(f"⚠️ **Duplicate File Skipped**: `{dup['filename']}` — {dup['reason']}")
+            st.warning(f"**Duplicate File Skipped**: `{dup['filename']}` — {dup['reason']}")
 
     if not coverage_info['is_complete']:
-        st.markdown(f'<div class="alert-box"><b>12-Month Coverage Warning:</b> {coverage_info["status_message"]}</div>', unsafe_allow_html=True)
+        st.warning(f"**12-Month Coverage Warning:** {coverage_info['status_message']}")
 
     if recon_status == "Discrepancy":
-        st.markdown(
-            f'<div class="alert-box"><b>Reconciliation Discrepancy:</b> {reconciliation_summary["message"]}</div>',
-            unsafe_allow_html=True)
+        st.error(f"**Reconciliation Discrepancy:** {reconciliation_summary['message']}")
     elif recon_status not in ("Reconciled",):
         st.warning(f"**Reconciliation — {recon_status}:** {reconciliation_summary['message']}")
 
@@ -243,9 +252,9 @@ if uploaded_files:
     # is real but not needed on every run -- tucked behind the audit
     # expander below instead of competing for attention up here.
     tab_questions, tab_summary, tab_nonpnl = st.tabs([
-        "❓ Client Inquiry Questions",
-        "📊 Schedule C Summary",
-        "🛑 Non-P&L Transfers",
+        "Client Inquiry Questions",
+        "Schedule C Summary",
+        "Non-P&L Transfers",
     ])
 
     with tab_questions:
@@ -291,7 +300,7 @@ if uploaded_files:
         render_question_editor("Form 1099 Verification", "Form 1099 Verification", ANSWER_OPTIONS["Form 1099 Verification"])
 
         st.markdown("")
-        if st.button("✅ Apply Client Answers & Recalculate Workpaper", type="primary"):
+        if st.button("Apply Client Answers & Recalculate Workpaper", type="primary"):
             # Merge the edited Answer / Notes columns back into the full
             # question objects (which still carry transaction_keys/contractor,
             # stripped out of the editor view above to keep it readable).
@@ -362,7 +371,7 @@ if uploaded_files:
     # AUDIT DETAIL -- everything true, just not needed every run. Collapsed
     # by default so it never competes with the 3 tabs above for attention.
     # ----------------------------------------------------
-    with st.expander("🔍 Ver detalle de auditoría (line items, reconciliación por archivo, transacciones grandes)"):
+    with st.expander("Ver detalle de auditoría (line items, reconciliación por archivo, transacciones grandes)"):
         audit_tab1, audit_tab2, audit_tab3 = st.tabs([
             "All Line Items", "Reconciliation QC", "Unusual / Large Transactions"
         ])
@@ -372,7 +381,7 @@ if uploaded_files:
                 df_tx = pd.DataFrame(all_transactions)
                 fc1, fc2, fc3 = st.columns([2, 2, 2])
                 with fc1:
-                    search_query = st.text_input("🔍 Search Payee / Description", key="tx_search")
+                    search_query = st.text_input("Search Payee / Description", key="tx_search")
                 with fc2:
                     cat_filter = st.selectbox("Filter by Category", ["All Categories"] + sorted(list(df_tx['category'].unique())), key="cat_filter")
                 with fc3:
@@ -441,14 +450,14 @@ if uploaded_files:
     )
 
     st.download_button(
-        label="📥 Download Audit-Ready Excel Workpaper (.xlsx)",
+        label="Download Audit-Ready Excel Workpaper (.xlsx)",
         data=excel_buffer,
         file_name=f"Schedule_C_Workpaper_{client_name.replace(' ', '_')}_{tax_year}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
 else:
-    st.warning("👈 Please upload bank statement PDFs or spreadsheets to begin processing.")
+    st.warning("Please upload bank statement PDFs or spreadsheets to begin processing.")
 
 st.sidebar.markdown("---")
 st.sidebar.caption(f"App version: {APP_VERSION}")

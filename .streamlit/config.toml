@@ -1,0 +1,31 @@
+[theme]
+base = "light"
+primaryColor = "#5C8727"
+backgroundColor = "#F7F5EF"
+secondaryBackgroundColor = "#FFFFFF"
+textColor = "#23261F"
+linkColor = "#4B6F1F"
+borderColor = "#DCD8CB"
+showWidgetBorder = true
+baseRadius = "small"
+font = "Source Sans 3, sans-serif"
+headingFont = "Source Serif 4, serif"
+codeFont = "monospace"
+dataframeHeaderBackgroundColor = "#2E4230"
+
+[[theme.fontFaces]]
+family = "Source Sans 3"
+url = "https://fonts.gstatic.com/s/sourcesans3/v18/nwpBtKy2OAdR1K-IwhWudF-R9QMylBJAV3Bo8Kw462k.woff2"
+weight = "200 900"
+
+[[theme.fontFaces]]
+family = "Source Serif 4"
+url = "https://fonts.gstatic.com/s/sourceserif4/v13/vEFy2_tTDB4M7-auWDN0ahZJW1gWgc4M8g.woff2"
+weight = "200 900"
+
+[theme.sidebar]
+backgroundColor = "#2E4230"
+secondaryBackgroundColor = "#354B36"
+textColor = "#F3F1E9"
+primaryColor = "#8FB94F"
+borderColor = "#4A6049"

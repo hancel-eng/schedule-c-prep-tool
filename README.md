@@ -46,11 +46,26 @@ visible by default — **Client Inquiry Questions** (first, editable, the
 actual deliverable), **Schedule C Summary**, and **Non-P&L Transfers** — with
 line-item search, per-statement reconciliation detail, and large-transaction
 review tucked behind a collapsed **"Ver detalle de auditoría"** expander,
-real but not needed on every run. While the app processes an upload, an
-`st.status` panel shows each pipeline step completing (extraction →
-categorization → reconciliation → question generation) with a per-file
-progress bar during extraction, then collapses to a one-line summary that
-stays on screen rather than a spinner that vanishes.
+real but not needed on every run. While the app processes an upload, a
+themed panel (`st.container(key="ts_progress_panel")`) shows each pipeline
+step completing (extraction → 12-month coverage → reconciliation → question
+generation) with a per-file progress bar during extraction, driven by
+`render_progress_steps()` in `theme.py`.
+
+### Visual identity
+
+`theme.py` holds the TaxSavers design tokens and the CSS injected once at
+the top of `app.py` (`st.markdown(CSS, unsafe_allow_html=True)`) — olive
+green primary, dark-green-ink sidebar/table-header/progress-panel surface,
+cream background, Source Serif 4 for headings and figures, Source Sans 3 for
+body text. `.streamlit/config.toml` carries the same palette into
+Streamlit's own theme engine (native widgets, dark-mode media query) so the
+CSS only needs to cover what the theme engine can't reach. Pure presentation
+— nothing in `theme.py` or the CSS touches parsing, categorization, or any
+`core/` logic. Streamlit is pinned exactly in `requirements.txt`
+(`data-testid` selectors are undocumented and change between versions) —
+bump the pin deliberately, and re-check the selectors in `theme.py`
+against the new version's frontend bundle before trusting them again.
 
 The sidebar footer shows the running `APP_VERSION` (`app.py`) — bump the
 string there on any change to `app.py` worth being able to point to by name.
