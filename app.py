@@ -13,6 +13,7 @@ from core.exception_analyzer import ExceptionAnalyzer
 from core.question_generator import ClientQuestionGenerator
 from core.reconciliation import ReconciliationChecker
 from core.excel_exporter import ExcelWorkpaperExporter
+from core.answer_applier import apply_client_answers, ANSWER_OPTIONS, uncategorized_expense_answer_options
 
 # Page Configuration
 st.set_page_config(
@@ -89,48 +90,88 @@ uploaded_files = st.file_uploader(
 if uploaded_files:
     st.markdown("---")
     st.subheader("2. File Ingestion & Coverage Verification")
-    
-    # 1. Filename Deduplication Check
-    dedup = FilenameDeduplicator()
-    unique_files, duplicates_flagged = dedup.process_files(uploaded_files)
+
+    # The app is single-session (see README: "one client = one session"), but
+    # a client's answers now need to survive a Streamlit rerun -- every
+    # widget interaction reruns this whole script top to bottom. Re-parsing
+    # every file on every rerun would silently discard any correction applied
+    # a moment earlier, so parsing only happens once per distinct set of
+    # uploaded files; re-running with the same files reuses the (possibly
+    # corrected) working transaction list already in session_state.
+    upload_signature = tuple(sorted((f.name, f.size) for f in uploaded_files))
+    needs_reparse = st.session_state.get("upload_signature") != upload_signature
+
+    if needs_reparse:
+        # 1. Filename Deduplication Check
+        dedup = FilenameDeduplicator()
+        unique_files, duplicates_flagged = dedup.process_files(uploaded_files)
+
+        # 2. Parsing Documents
+        pdf_parser = BankPDFParser(categorizer=categorizer)
+        sheet_parser = SpreadsheetParser(categorizer=categorizer)
+        totals_parser = TotalsParser()
+
+        parsed_transactions: List[Dict[str, Any]] = []
+        months_found: List[int] = []
+        diagnostics_log = []
+        reconciler = ReconciliationChecker()
+        reconciliation_results: List[Dict[str, Any]] = []
+
+        for file_obj in unique_files:
+            filename = file_obj.name
+
+            if filename.lower().endswith('.pdf'):
+                res = pdf_parser.parse_pdf(file_obj, filename)
+                parsed_transactions.extend(res['transactions'])
+                months_found.extend(res['months_found'])
+                reconciliation_results.append(reconciler.check_document(
+                    filename, res['statement_summary'], res['transactions']
+                ))
+                diagnostics_log.append({"file": filename, "type": "PDF", "count": len(res['transactions']), "details": res.get('diagnostics')})
+
+            elif filename.lower().endswith(('.xlsx', '.xls', '.csv')):
+                res = sheet_parser.parse_spreadsheet(file_obj, filename)
+                parsed_transactions.extend(res['transactions'])
+                diagnostics_log.append({"file": filename, "type": "Spreadsheet", "count": len(res['transactions']), "details": res.get('diagnostics')})
+
+        coverage_info = pdf_parser.check_12_month_coverage(months_found)
+        reconciliation_summary = reconciler.summarize(reconciliation_results)
+
+        # A genuinely new set of files starts a fresh client -- any prior
+        # corrections belonged to the previous upload and don't carry over.
+        st.session_state.upload_signature = upload_signature
+        st.session_state.all_transactions = parsed_transactions
+        st.session_state.correction_log = []
+        st.session_state.diagnostics_log = diagnostics_log
+        st.session_state.coverage_info = coverage_info
+        st.session_state.reconciliation_summary = reconciliation_summary
+        st.session_state.reconciliation_results = reconciliation_results
+        st.session_state.duplicates_flagged = duplicates_flagged
+        st.session_state.unique_file_count = len(unique_files)
+
+    # Every rerun (fresh parse or not) reads from session_state, so an
+    # applied client answer is what the rest of the page actually sees.
+    all_transactions: List[Dict[str, Any]] = st.session_state.all_transactions
+    diagnostics_log = st.session_state.diagnostics_log
+    coverage_info = st.session_state.coverage_info
+    reconciliation_summary = st.session_state.reconciliation_summary
+    reconciliation_results = st.session_state.reconciliation_results
+    duplicates_flagged = st.session_state.duplicates_flagged
+    correction_log = st.session_state.correction_log
 
     if duplicates_flagged:
         for dup in duplicates_flagged:
             st.warning(f"⚠️ **Duplicate File Skipped**: `{dup['filename']}` — {dup['reason']}")
 
-    st.success(f"✅ Processing **{len(unique_files)} unique file(s)**.")
+    if needs_reparse:
+        st.success(f"✅ Processing **{st.session_state.unique_file_count} unique file(s)**.")
+    else:
+        st.success(
+            f"✅ Using the **{st.session_state.unique_file_count} unique file(s)** already processed "
+            f"this session ({len(correction_log)} client answer(s) applied). Upload a different set "
+            f"of files to start a new client."
+        )
 
-    # 2. Parsing Documents
-    pdf_parser = BankPDFParser(categorizer=categorizer)
-    sheet_parser = SpreadsheetParser(categorizer=categorizer)
-    totals_parser = TotalsParser()
-
-    all_transactions: List[Dict[str, Any]] = []
-    months_found: List[int] = []
-    diagnostics_log = []
-    reconciler = ReconciliationChecker()
-    reconciliation_results: List[Dict[str, Any]] = []
-
-    for file_obj in unique_files:
-        filename = file_obj.name
-        
-        if filename.lower().endswith('.pdf'):
-            res = pdf_parser.parse_pdf(file_obj, filename)
-            all_transactions.extend(res['transactions'])
-            months_found.extend(res['months_found'])
-            reconciliation_results.append(reconciler.check_document(
-                filename, res['statement_summary'], res['transactions']
-            ))
-            diagnostics_log.append({"file": filename, "type": "PDF", "count": len(res['transactions']), "details": res.get('diagnostics')})
-
-        elif filename.lower().endswith(('.xlsx', '.xls', '.csv')):
-            res = sheet_parser.parse_spreadsheet(file_obj, filename)
-            all_transactions.extend(res['transactions'])
-            diagnostics_log.append({"file": filename, "type": "Spreadsheet", "count": len(res['transactions']), "details": res.get('diagnostics')})
-
-    # Check 12-Month Coverage
-    coverage_info = pdf_parser.check_12_month_coverage(months_found)
-    
     if coverage_info['is_complete']:
         st.markdown(f'<div class="success-box"><b>12-Month Coverage Verified:</b> All 12 months present in bank statements.</div>', unsafe_allow_html=True)
     else:
@@ -138,7 +179,6 @@ if uploaded_files:
 
     # Reconciliation QC: do the extracted transactions agree with what the
     # statements themselves declare?
-    reconciliation_summary = reconciler.summarize(reconciliation_results)
     recon_status = reconciliation_summary['status']
 
     if recon_status == "Reconciled":
@@ -152,15 +192,29 @@ if uploaded_files:
     else:
         st.warning(f"**Reconciliation — {recon_status}:** {reconciliation_summary['message']}")
 
-    # 3. Analyze Exceptions & QC
+    # 3. Analyze Exceptions & QC -- recomputed fresh every run, straight from
+    # the current (possibly client-corrected) transaction list, so an applied
+    # answer's effect on the exception queues shows up immediately.
     analyzer = ExceptionAnalyzer()
     exceptions = analyzer.analyze_exceptions(
         all_transactions, de_minimis_threshold=de_minimis_threshold
     )
 
-    # 4. Generate Client Questions
+    # 4. Generate Client Questions, then drop any 1099 question already
+    # answered in a prior round -- a 1099 answer is a compliance note, not a
+    # transaction recategorization (see core/answer_applier.py), so nothing
+    # about the underlying transaction changes to naturally exclude it the
+    # way an answered personal-expense or uncategorized question does.
     q_gen = ClientQuestionGenerator()
     questions = q_gen.generate_question_list(exceptions, client_name=client_name)
+    resolved_contractors = {
+        entry["payee"] for entry in correction_log
+        if entry.get("question_category") == "Form 1099 Verification" and entry.get("applied")
+    }
+    questions = [
+        q for q in questions
+        if not (q["category"] == "Form 1099 Verification" and q.get("contractor") in resolved_contractors)
+    ]
 
     # Robust Totals Calculation
     gross_receipts = sum(tx['amount'] for tx in all_transactions if tx.get('is_deposit') and not tx.get('category', '').startswith("Non-P&L:"))
@@ -287,9 +341,89 @@ if uploaded_files:
 
     with tab5:
         st.markdown("#### Auto-Generated Client Question Checklist")
-        if questions:
-            df_q = pd.DataFrame(questions)
-            st.dataframe(df_q[['item_id', 'category', 'date', 'payee', 'amount', 'question']], use_container_width=True, height=450)
+        st.caption(
+            "Send the questions below to the client however you normally do (this tool never "
+            "sends anything itself). Once you have their answers, enter them in the **Answer** "
+            "column for each item and click **Apply Client Answers & Recalculate Workpaper** — "
+            "the dashboard, exception queues, and Excel export all update immediately, and an "
+            "answered item does not come back as an open question on the next run."
+        )
+
+        editors: Dict[str, pd.DataFrame] = {}
+
+        def render_question_editor(section_title: str, question_category: str, answer_options: List[str]):
+            subset = [q for q in questions if q["category"] == question_category]
+            st.markdown(f"**{section_title} ({len(subset)} open)**")
+            if not subset:
+                st.caption("Nothing open in this category.")
+                return
+            df = pd.DataFrame(subset)[["item_id", "date", "payee", "amount", "question", "client_response", "answer"]]
+            edited = st.data_editor(
+                df,
+                column_config={
+                    "item_id": st.column_config.TextColumn("ID", disabled=True, width="small"),
+                    "date": st.column_config.TextColumn("Date", disabled=True, width="small"),
+                    "payee": st.column_config.TextColumn("Payee", disabled=True),
+                    "amount": st.column_config.TextColumn("Amount", disabled=True, width="small"),
+                    "question": st.column_config.TextColumn("Question", disabled=True, width="large"),
+                    "client_response": st.column_config.TextColumn("Notes from client (free text)"),
+                    "answer": st.column_config.SelectboxColumn("Answer", options=answer_options, required=False, width="medium"),
+                },
+                hide_index=True,
+                use_container_width=True,
+                num_rows="fixed",
+                key=f"editor_{question_category}",
+            )
+            editors[question_category] = edited
+
+        render_question_editor("Expense Verification", "Expense Verification", ANSWER_OPTIONS["Expense Verification"])
+        render_question_editor("Asset Purchase", "Asset Purchase", ANSWER_OPTIONS["Asset Purchase"])
+        render_question_editor("Uncategorized Expense", "Uncategorized Expense", uncategorized_expense_answer_options())
+        render_question_editor("Form 1099 Verification", "Form 1099 Verification", ANSWER_OPTIONS["Form 1099 Verification"])
+
+        st.markdown("")
+        if st.button("✅ Apply Client Answers & Recalculate Workpaper", type="primary"):
+            # Merge the edited Answer / Notes columns back into the full
+            # question objects (which still carry transaction_key/contractor,
+            # stripped out of the editor view above to keep it readable).
+            answered_questions = []
+            for q in questions:
+                edited_df = editors.get(q["category"])
+                if edited_df is None:
+                    continue
+                match = edited_df[edited_df["item_id"] == q["item_id"]]
+                if match.empty:
+                    continue
+                row = match.iloc[0]
+                q = dict(q)
+                q["answer"] = row.get("answer", "") or ""
+                q["client_response"] = row.get("client_response", "") or ""
+                answered_questions.append(q)
+
+            updated_transactions, new_log_entries = apply_client_answers(all_transactions, answered_questions)
+            applied_count = sum(1 for e in new_log_entries if e["applied"])
+
+            st.session_state.all_transactions = updated_transactions
+            st.session_state.correction_log = st.session_state.correction_log + new_log_entries
+
+            # st.rerun() immediately abandons the rest of this script run, so
+            # a message shown right before it would never actually be visible
+            # -- only rerun when something changed and there's a fresh
+            # dashboard worth seeing. When nothing was entered, this message
+            # is what's left on screen instead of flashing and disappearing.
+            if applied_count:
+                st.rerun()
+            else:
+                st.info("No new answers to apply — fill in the Answer column above first.")
+
+        if correction_log:
+            st.markdown("---")
+            st.markdown(f"**Applied Client Answers This Session ({len(correction_log)}):**")
+            df_log = pd.DataFrame(correction_log)
+            st.dataframe(
+                df_log[['item_id', 'question_category', 'payee', 'client_answer', 'old_category', 'new_category', 'applied', 'note']],
+                use_container_width=True, height=300
+            )
 
     with tab6:
         st.markdown("#### Excluded Non-P&L Transfers & Credit Card Payments")
@@ -339,7 +473,8 @@ if uploaded_files:
         questions=questions,
         coverage_info=coverage_info,
         duplicates_info=duplicates_flagged,
-        reconciliation_summary=reconciliation_summary
+        reconciliation_summary=reconciliation_summary,
+        correction_log=correction_log
     )
 
     st.download_button(

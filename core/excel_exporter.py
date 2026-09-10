@@ -13,7 +13,8 @@ class ExcelWorkpaperExporter:
     def generate_workpaper(self, client_name: str, tax_year: int, transactions: List[Dict[str, Any]],
                            exceptions_dict: Dict[str, Any], questions: List[Dict[str, str]],
                            coverage_info: Dict[str, Any], duplicates_info: List[Dict[str, str]],
-                           reconciliation_summary: Dict[str, Any] = None) -> io.BytesIO:
+                           reconciliation_summary: Dict[str, Any] = None,
+                           correction_log: List[Dict[str, Any]] = None) -> io.BytesIO:
         """
         Creates an openpyxl Workbook and returns a BytesIO buffer.
         """
@@ -249,7 +250,7 @@ class ExcelWorkpaperExporter:
         ws5 = wb.create_sheet(title="Client Questions")
         ws5.views.sheetView[0].showGridLines = True
 
-        q_headers = ["Item ID", "Category", "Date", "Payee / Entity", "Amount ($)", "Question for Client", "Client Response"]
+        q_headers = ["Item ID", "Category", "Date", "Payee / Entity", "Amount ($)", "Question for Client", "Client Response", "Answer (Resolved In-App)"]
         for c_idx, h_text in enumerate(q_headers, start=1):
             cell = ws5.cell(row=1, column=c_idx, value=h_text)
             cell.font = header_font
@@ -263,6 +264,7 @@ class ExcelWorkpaperExporter:
             ws5.cell(row=r_idx, column=5, value=q.get('amount')).font = normal_font
             ws5.cell(row=r_idx, column=6, value=q.get('question')).font = normal_font
             ws5.cell(row=r_idx, column=7, value=q.get('client_response')).font = normal_font
+            ws5.cell(row=r_idx, column=8, value=q.get('answer')).font = normal_font
 
         # ----------------------------------------------------
         # TAB 6: RECONCILIATION QC
@@ -315,6 +317,46 @@ class ExcelWorkpaperExporter:
 
         if not recon.get("results"):
             ws6.cell(row=7, column=1, value="No PDF statements were reconciled in this run.").font = normal_font
+
+        # ----------------------------------------------------
+        # TAB 7: APPLIED CLIENT ANSWERS
+        # ----------------------------------------------------
+        ws7 = wb.create_sheet(title="Applied Client Answers")
+        ws7.views.sheetView[0].showGridLines = True
+
+        ws7.cell(row=1, column=1, value="CORRECTIONS APPLIED FROM CLIENT ANSWERS").font = title_font
+        ws7.cell(row=2, column=1,
+                value="Every change made to the workpaper after the client answered a question -- "
+                      "the audit trail behind any number that differs from the original extraction.").font = subtitle_font
+
+        log_headers = ["Item ID", "Question Type", "Payee", "Date", "Amount ($)",
+                      "Client's Answer", "Old Category", "New Category", "Applied?", "Note"]
+        for c_idx, h_text in enumerate(log_headers, start=1):
+            cell = ws7.cell(row=4, column=c_idx, value=h_text)
+            cell.font = header_font
+            cell.fill = header_fill
+
+        log_entries = correction_log or []
+        for r_idx, entry in enumerate(log_entries, start=5):
+            values = [
+                entry.get("item_id"), entry.get("question_category"), entry.get("payee"),
+                entry.get("date"), entry.get("amount"), entry.get("client_answer"),
+                entry.get("old_category"), entry.get("new_category"),
+                "Yes" if entry.get("applied") else "No -- needs manual review",
+                entry.get("note"),
+            ]
+            for c_idx, value in enumerate(values, start=1):
+                cell = ws7.cell(row=r_idx, column=c_idx, value=value)
+                cell.font = normal_font
+            applied_cell = ws7.cell(row=r_idx, column=9)
+            applied_cell.font = bold_font
+            applied_cell.fill = green_fill if entry.get("applied") else alert_fill
+
+        if not log_entries:
+            ws7.cell(row=5, column=1,
+                    value="No client answers have been applied yet. Answer the questions in "
+                          "the app's Client Questions tab and click \"Apply Client Answers & "
+                          "Recalculate\" to populate this sheet.").font = normal_font
 
         # Auto-adjust column widths for all worksheets
         for ws in wb.worksheets:

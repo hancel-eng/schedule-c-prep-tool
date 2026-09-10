@@ -64,19 +64,32 @@ class ExceptionAnalyzer:
                     "reason": "Low confidence classification. Requires preparer category assignment."
                 })
 
+            # core.answer_applier stamps client_confirmed=True on any
+            # transaction it touches once a client's answer has been applied.
+            # Skipping already-resolved transactions here (rather than
+            # inferring resolution from category text, which would also
+            # suppress a transaction the categorizer itself auto-placed in a
+            # Non-P&L or Line 13 category -- a real exception that still needs
+            # review, not a resolved one) is what lets the client-answer loop
+            # actually close: without it, every question would regenerate
+            # identically on the next recompute, since neither check below
+            # looks at whether it was already answered.
+            already_resolved = bool(tx.get("client_confirmed"))
+
             # 2. Potential Personal Expenses
-            for kw, pattern in _PERSONAL_EXPENSE_PATTERNS:
-                if pattern.search(payee_lower) or pattern.search(desc_lower):
-                    potential_personal.append({
-                        **tx,
-                        "reason": f"Matched personal keyword '{kw}'. Verify business purpose."
-                    })
-                    break
+            if not already_resolved:
+                for kw, pattern in _PERSONAL_EXPENSE_PATTERNS:
+                    if pattern.search(payee_lower) or pattern.search(desc_lower):
+                        potential_personal.append({
+                            **tx,
+                            "reason": f"Matched personal keyword '{kw}'. Verify business purpose."
+                        })
+                        break
 
             # 3. Potential Fixed Assets / Capital Expenditures (> $2,500 threshold or asset keywords)
             is_asset_kw = any(pattern.search(payee_lower) or pattern.search(desc_lower)
                               for _, pattern in _CAPITAL_ASSET_PATTERNS)
-            if (amt >= de_minimis_threshold or is_asset_kw) and not tx.get("is_deposit"):
+            if (amt >= de_minimis_threshold or is_asset_kw) and not tx.get("is_deposit") and not already_resolved:
                 potential_fixed_assets.append({
                     **tx,
                     "reason": f"Amount ${amt:,.2f} exceeds ${de_minimis_threshold:,.0f} threshold or contains capital equipment keywords. Evaluate Section 179 / Depreciation."

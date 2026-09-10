@@ -300,3 +300,84 @@ tab/sheet rather than silently absorbed into the totals — investigate
 per-statement rather than assuming a systemic cause, since the largest
 remaining sources (P&L, merged text, bare withdrawal headers, phantom daily
 balances) are now fixed.
+
+---
+
+## Client-answer feedback loop — 2026-09-10
+
+From a call with Lindsay: Tax Savers' Schedule C clients arrive at two
+different tiers. **Level 2** (12 full statements) is what this tool handles.
+**Level 1** (messy, inconsistent expense totals only, no statements) has no
+tool yet — Lindsay is sending real client examples before that work starts.
+
+Lindsay's direct question on the call — once a client answers the
+auto-generated questions, how does the workpaper's numbers update? — was an
+open gap (no way existed to feed an answer back into the app). **Closed this
+session.**
+
+### What was built
+
+- `core/transaction_utils.py` — a stable transaction identity (date + payee +
+  amount + source file) used to trace a question back to the exact
+  transaction(s) it concerns, without needing a database or a synthetic id.
+- `core/question_generator.py` — every generated question now carries that
+  key (or, for the 1099 aggregate questions, the contractor name).
+- `core/answer_applier.py` — applies an answered question to the transaction
+  list: a confirmed-personal expense is recategorized to `Non-P&L: Personal
+  Expense (Client Confirmed)` and excluded from the P&L entirely; a confirmed
+  asset moves to Line 13; an uncategorized item is recategorized only if the
+  answer is one of the tool's own recognized categories (an answer in the
+  client's own words is logged for the preparer to map by hand, never
+  guessed at); a 1099 answer is a compliance note, not a recategorization.
+  Every transaction touched is stamped `client_confirmed=True`.
+- `core/exception_analyzer.py` — now skips a transaction already stamped
+  `client_confirmed`, which is what actually lets the loop close: without
+  it, an answered question regenerated identically on every recompute.
+  Deliberately keyed off that stamp rather than off category text, so a
+  transaction the *categorizer itself* auto-placed in a Non-P&L or Line 13
+  category (a real, still-open exception if it also matches a personal/asset
+  keyword) is never mistaken for a resolved one.
+- `core/excel_exporter.py` — a seventh sheet, **Applied Client Answers**,
+  the audit trail of every correction and why.
+- `app.py` — the **Client Inquiry Questions** tab is now four editable
+  tables (one per question type), each with an **Answer** column
+  constrained to a fixed dropdown (never free text) via
+  `st.column_config.SelectboxColumn`. An **Apply Client Answers &
+  Recalculate Workpaper** button merges the edited answers, calls
+  `answer_applier`, and reruns — the dashboard, exception queues, and Excel
+  export all reflect the correction immediately. Parsing now only happens
+  once per distinct set of uploaded files (guarded by a signature of
+  filename+size), with the working transaction list held in
+  `st.session_state` between reruns — required so a client's answer
+  survives the rerun every Streamlit widget interaction triggers, without
+  breaking the documented "one client = one session, nothing persisted"
+  design: state still lives only as long as the browser tab does, and a
+  different set of uploaded files starts a clean slate.
+
+### Verification
+
+18 new unit tests (`tests/test_answer_applier.py` and
+`tests/test_transaction_utils.py`) cover every answer type, the "never guess"
+behavior on an unrecognized answer, multiple transactions sharing a key, a
+stale question referencing a since-changed transaction, and — the concern
+the whole feature exists to address — that an answered question does not
+regenerate on the next recompute.
+
+`streamlit.testing.v1.AppTest` drove the actual `app.py` script headlessly
+against 6 of the real TD Trees statement PDFs (uploaded via `AppTest`'s
+`file_uploader.upload()`, which accepts real bytes): the app rendered with
+no exception, session state correctly persisted the working transaction list
+across a rerun without re-parsing, and clicking the Apply button round-
+tripped cleanly. This caught one real bug before it shipped: a message
+meant to show when no answers were entered was being wiped out by an
+unconditional `st.rerun()` immediately after it, so it never actually
+rendered in a real browser — fixed by only rerunning when something was
+actually applied.
+
+**Known test gap:** this Streamlit version's `AppTest` has no typed
+accessor for `st.data_editor` (unlike `st.button`, `st.selectbox`, etc.), so
+editing a cell and confirming the exact value that reaches `answer_applier`
+end-to-end could not be automated — the merge-by-`item_id` logic itself is
+covered directly in `tests/test_answer_applier.py`, but the last mile (does
+typing "Personal" into the live grid actually reach that logic) needs a
+manual click-through the first time this ships.

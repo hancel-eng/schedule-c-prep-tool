@@ -27,7 +27,7 @@ messy client documents
 
 ## What it produces
 
-Every run outputs a formatted `.xlsx` workbook with six sheets:
+Every run outputs a formatted `.xlsx` workbook with seven sheets:
 
 | Sheet | Contents |
 |---|---|
@@ -35,11 +35,34 @@ Every run outputs a formatted `.xlsx` workbook with six sheets:
 | **All Transactions** | Full audit trail: date, payee, description, amount, deposit flag, final category, original client category, confidence state, source file |
 | **Non-P&L & Transfers** | Everything excluded from the P&L, with the reason |
 | **Exceptions Queue** | Potential personal expenses and potential fixed assets, each with an audit note |
-| **Client Questions** | Auto-generated inquiry checklist with a blank response column |
+| **Client Questions** | Auto-generated inquiry checklist, plus the answer once resolved in-app |
 | **Reconciliation QC** | Per-statement reconciliation, 12-month coverage, duplicate files skipped |
+| **Applied Client Answers** | Audit trail of every correction the workpaper picked up from an answered question — old category, new category, and why |
 
 A Streamlit dashboard shows the same data interactively before export
 (searchable line items, vendor grouping, exception queues, parsing diagnostics).
+
+### Closing the loop: client answers feed back into the workpaper
+
+The **Client Inquiry Questions** tab is editable, not read-only. Each open
+question (potential personal expense, potential fixed asset, uncategorized
+line, contractor nearing the 1099 threshold) gets its own small table with an
+**Answer** column constrained to a fixed set of choices — never free text, so
+the app is never guessing what an answer meant:
+
+| Question type | Answer choices | What happens |
+|---|---|---|
+| Expense Verification | Business / Personal / Unclear | *Personal* excludes the transaction from the P&L entirely; *Business* upgrades it to High Confidence |
+| Asset Purchase | Confirmed Asset / Not an Asset / Unclear | *Confirmed Asset* recategorizes to Line 13 (Depreciation/Section 179) and logs the client's placed-in-service detail for the preparer |
+| Uncategorized Expense | any real Schedule C category | Recategorizes and upgrades confidence — an answer that isn't one of the tool's own categories is logged for manual mapping, never guessed at |
+| Form 1099 Verification | Filed / Will File / Not Required | Logged as a compliance note against the contractor; no dollar amount changes |
+
+Clicking **Apply Client Answers & Recalculate Workpaper** applies every
+answered question at once: the dashboard, exception queues, and Excel export
+all update immediately, and a resolved question does not reappear on the next
+recompute. Everything stays inside the current session — consistent with "one
+client = one session" above, nothing is written to disk or a database, and
+uploading a different set of files starts a new client with a clean slate.
 
 ### Confidence labels
 
