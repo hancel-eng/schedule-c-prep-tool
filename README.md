@@ -56,16 +56,32 @@ generation) with a per-file progress bar during extraction, driven by
 
 `theme.py` holds the TaxSavers design tokens and the CSS injected once at
 the top of `app.py` (`st.markdown(CSS, unsafe_allow_html=True)`) — olive
-green primary, dark-green-ink sidebar/table-header/progress-panel surface,
-cream background, Source Serif 4 for headings and figures, Source Sans 3 for
-body text. `.streamlit/config.toml` carries the same palette into
-Streamlit's own theme engine (native widgets, dark-mode media query) so the
-CSS only needs to cover what the theme engine can't reach. Pure presentation
-— nothing in `theme.py` or the CSS touches parsing, categorization, or any
-`core/` logic. Streamlit is pinned exactly in `requirements.txt`
-(`data-testid` selectors are undocumented and change between versions) —
-bump the pin deliberately, and re-check the selectors in `theme.py`
-against the new version's frontend bundle before trusting them again.
+green primary, dark-green-ink sidebar/progress-panel surface, cream
+background, Source Serif 4 for headings and figures, Source Sans 3 for body
+text. `.streamlit/config.toml` carries the same palette into Streamlit's own
+theme engine (native widgets, dark-mode media query) so the CSS only needs
+to cover what the theme engine can't reach. Pure presentation — nothing in
+`theme.py` or the CSS touches parsing, categorization, or any `core/` logic.
+Streamlit is pinned exactly in `requirements.txt` (`data-testid` selectors
+are undocumented and change between versions) — bump the pin deliberately,
+and re-check the selectors in `theme.py` against the new version's frontend
+bundle before trusting them again.
+
+**`st.dataframe`/`st.data_editor` paint their content on `<canvas>`** (Glide
+Data Grid), not as styleable DOM text — confirmed live: a CSS `color` rule
+on `[role="columnheader"]` never reached the canvas paint pass, and there is
+no dedicated header-text-color theme key in this Streamlit version (checked
+every key in `config.py`; only `dataframeBorderColor` and
+`dataframeHeaderBackgroundColor` exist for dataframes). The header always
+renders in the app's single global `textColor`, so `dataframeHeaderBackgroundColor`
+is set to a light tint (`#EEF3E4`) that reads correctly against it, rather
+than the dark ink used everywhere else — don't reintroduce a dark dataframe
+header without also solving this. The same canvas constraint means a
+`SelectboxColumn` shows no persistent dropdown-arrow affordance until a cell
+is actually opened for editing; there is no icon parameter on
+`SelectboxColumn` to add one, so the "Answer" columns carry a `▾` in the
+column label text itself (the one part of the header that is real rendered
+content, not styling) instead.
 
 The sidebar footer shows the running `APP_VERSION` (`app.py`) — bump the
 string there on any change to `app.py` worth being able to point to by name.

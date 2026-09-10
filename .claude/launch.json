@@ -5,12 +5,7 @@
     {
       "name": "schedule-c-tool",
       "runtimeExecutable": "venv/bin/streamlit",
-      "runtimeArgs": [
-        "run",
-        "app.py",
-        "--server.headless",
-        "true"
-      ],
+      "runtimeArgs": ["run", "app.py", "--server.headless", "true"],
       "port": 8501
     }
   ]

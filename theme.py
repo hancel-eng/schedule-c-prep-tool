@@ -111,14 +111,20 @@ div[data-testid="stColumn"]:nth-of-type(4) [data-testid="stMetric"] {
   box-shadow: inset 0 -2px 0 var(--ts-primary);
 }
 
-/* tablas y data editor */
+/* tablas y data editor -- st.dataframe/st.data_editor paint their contents
+   on <canvas> (Glide Data Grid), not as styleable DOM text: [role="columnheader"]
+   and [role="gridcell"] nodes exist for accessibility/hit-testing, but a CSS
+   `color` rule on them never reaches the canvas paint pass. Confirmed live:
+   setting color here left header text unreadable against a dark background,
+   because the canvas always draws with the app's global textColor. The header
+   background IS controllable (dataframeHeaderBackgroundColor in
+   .streamlit/config.toml, read directly by the grid's theme builder), so the
+   fix is a light header tint that reads correctly against the fixed dark
+   text, not a text-color override -- there is no such key in this Streamlit
+   version (confirmed against the full theme option list in config.py). */
 [data-testid="stDataFrame"], [data-testid="stDataFrameResizable"] {
   border: 1px solid var(--ts-border); border-radius: var(--ts-r-md);
   overflow: hidden; box-shadow: var(--ts-shadow-1);
-}
-[data-testid="stDataFrame"] [role="columnheader"] {
-  background: var(--ts-ink) !important; color: #F3F1E9 !important;
-  font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
 }
 [data-testid="stDataFrame"] [role="gridcell"] {
   font-size: 14px; font-variant-numeric: tabular-nums;

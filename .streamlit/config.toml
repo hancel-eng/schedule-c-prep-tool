@@ -11,7 +11,7 @@ baseRadius = "small"
 font = "Source Sans 3, sans-serif"
 headingFont = "Source Serif 4, serif"
 codeFont = "monospace"
-dataframeHeaderBackgroundColor = "#2E4230"
+dataframeHeaderBackgroundColor = "#EEF3E4"
 
 [[theme.fontFaces]]
 family = "Source Sans 3"

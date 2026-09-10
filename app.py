@@ -19,7 +19,7 @@ from theme import CSS, render_progress_steps
 # Bumped on every meaningful change to this file, so whoever is looking at the
 # app can tell which version is running just by glancing at the sidebar --
 # there is no separate deploy/build pipeline that would otherwise show that.
-APP_VERSION = "v2"
+APP_VERSION = "v3"
 
 # Page Configuration
 st.set_page_config(
@@ -285,7 +285,13 @@ if uploaded_files:
                     "amount": st.column_config.TextColumn("Total", disabled=True, width="small"),
                     "question": st.column_config.TextColumn("Question", disabled=True, width="large"),
                     "client_response": st.column_config.TextColumn("Notes from client (free text)"),
-                    "answer": st.column_config.SelectboxColumn("Answer", options=answer_options, required=False, width="medium"),
+                    # The grid gives no persistent visual cue that a column is
+                    # a dropdown (the caret only appears once a cell is opened
+                    # for editing) -- there's no separate icon/indicator param
+                    # on SelectboxColumn, so the affordance goes in the label
+                    # text itself, the one part of the header that is real
+                    # rendered content rather than styling.
+                    "answer": st.column_config.SelectboxColumn("Answer ▾", options=answer_options, required=False, width="medium"),
                 },
                 hide_index=True,
                 use_container_width=True,
