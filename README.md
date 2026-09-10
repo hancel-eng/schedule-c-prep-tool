@@ -39,8 +39,21 @@ Every run outputs a formatted `.xlsx` workbook with seven sheets:
 | **Reconciliation QC** | Per-statement reconciliation, 12-month coverage, duplicate files skipped |
 | **Applied Client Answers** | Audit trail of every correction the workpaper picked up from an answered question — old category, new category, and why |
 
-A Streamlit dashboard shows the same data interactively before export
-(searchable line items, vendor grouping, exception queues, parsing diagnostics).
+A Streamlit dashboard shows the same data interactively before export.
+Redesigned 2026-09-11 around the primary success metric (Hans): speed from
+upload to a sendable client question list, not exhaustiveness. Three tabs are
+visible by default — **Client Inquiry Questions** (first, editable, the
+actual deliverable), **Schedule C Summary**, and **Non-P&L Transfers** — with
+line-item search, per-statement reconciliation detail, and large-transaction
+review tucked behind a collapsed **"Ver detalle de auditoría"** expander,
+real but not needed on every run. While the app processes an upload, an
+`st.status` panel shows each pipeline step completing (extraction →
+categorization → reconciliation → question generation) with a per-file
+progress bar during extraction, then collapses to a one-line summary that
+stays on screen rather than a spinner that vanishes.
+
+The sidebar footer shows the running `APP_VERSION` (`app.py`) — bump the
+string there on any change to `app.py` worth being able to point to by name.
 
 ### Closing the loop: client answers feed back into the workpaper
 
