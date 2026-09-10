@@ -127,6 +127,13 @@ WITHDRAWAL_KEYWORDS = [
     # broken on this exact bank layout, so this list is real defense-in-depth,
     # not a redundant safety net.
     "card purchase", "pin purchase", "recurring card transaction", "ach debit",
+    # "Returned Deposit Item" (a bounced check reversal) contains the literal
+    # word "deposit", which DEPOSIT_KEYWORDS below would otherwise match --
+    # and on a real statement this line sits inside the WITHDRAWALS section,
+    # correctly reducing the balance, not adding to it. Checked before
+    # DEPOSIT_KEYWORDS in the classification order, so this wins regardless
+    # of which section the line happens to be in.
+    "returned deposit", "return item",
 ]
 
 class BankPDFParser:
@@ -574,8 +581,18 @@ class BankPDFParser:
                         # list ("* Break In Check Number Sequence." footnotes
                         # excluded since it has no digits to match).
                         if current_section == "CHECK_DETAIL" and "date" not in l_lower:
+                            # The check number is optional (a bank sometimes
+                            # never recorded one -- confirmed on two real
+                            # statements, "09/17  8,000.00" with nothing
+                            # between the date and the amount, exactly the
+                            # dollar amount missing from reconciliation before
+                            # this was fixed), and an asterisk can sit between
+                            # the check number and the amount, marking a
+                            # "Break In Check Number Sequence" footnote
+                            # ("12/15  1272 * 260.00") -- \*? absorbs it
+                            # without requiring it.
                             check_entries = re.findall(
-                                r'(\d{1,2}/\d{1,2}(?:/\d{2,4})?)\s+(\d{3,6})\s+(\d{1,3}(?:,\d{3})*\.\d{2})',
+                                r'(\d{1,2}/\d{1,2}(?:/\d{2,4})?)\s+(?:(\d{3,6})\s+)?\*?\s*(\d{1,3}(?:,\d{3})*\.\d{2})',
                                 clean_line
                             )
                             if check_entries:
@@ -586,17 +603,18 @@ class BankPDFParser:
                                     chk_year = self._resolve_transaction_year(chk_date_raw, statement_end_month, year) if len(chk_date_raw) <= 5 else None
                                     chk_date = f"{chk_date_raw}/{chk_year}" if chk_year is not None else chk_date_raw
                                     final_amt = -abs(chk_amt)
+                                    chk_label = f"Check #{chk_num}" if chk_num else "Check (no number recorded)"
 
                                     cat, conf_state, conf_score = self.categorizer.categorize_transaction(
-                                        payee=f"Check #{chk_num}",
-                                        description=f"Check #{chk_num}",
+                                        payee=chk_label,
+                                        description=chk_label,
                                         amount=final_amt,
                                         is_deposit=False
                                     )
                                     transactions.append(TransactionItem(
                                         date=chk_date,
-                                        payee=f"Check #{chk_num}",
-                                        description=f"Check #{chk_num}",
+                                        payee=chk_label,
+                                        description=chk_label,
                                         amount=final_amt,
                                         is_deposit=False,
                                         category=cat,

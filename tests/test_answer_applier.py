@@ -22,7 +22,7 @@ def _question(tx, category, answer="", client_response="", item_id="Q-001"):
     return {
         "item_id": item_id,
         "category": category,
-        "transaction_key": transaction_key(tx),
+        "transaction_keys": [transaction_key(tx)],
         "date": tx["date"], "payee": tx["payee"], "amount": f"${abs(tx['amount']):,.2f}",
         "question": "N/A",
         "client_response": client_response,
@@ -138,7 +138,7 @@ def test_uncategorized_answer_options_matches_the_categorizer():
 def test_1099_answer_logs_a_compliance_note_without_touching_transactions():
     tx = _tx(payee="John Subcontractor", category="Line 11: Contract labor")
     q = {
-        "item_id": "Q-009", "category": "Form 1099 Verification", "transaction_key": None,
+        "item_id": "Q-009", "category": "Form 1099 Verification", "transaction_keys": [],
         "contractor": "John Subcontractor", "date": "Full Year 2025", "payee": "John Subcontractor",
         "amount": "$850.00", "question": "N/A", "client_response": "", "answer": "Filed",
     }
@@ -171,7 +171,7 @@ def test_answer_applies_to_every_transaction_sharing_the_key():
 def test_answer_for_a_transaction_no_longer_present_is_logged_not_applied():
     tx = _tx()
     stale_q = dict(_question(tx, "Expense Verification", answer="Personal"))
-    stale_q["transaction_key"] = "some/other/key/that/does/not/exist"
+    stale_q["transaction_keys"] = ["some/other/key/that/does/not/exist"]
 
     updated, log = apply_client_answers([tx], [stale_q])
 

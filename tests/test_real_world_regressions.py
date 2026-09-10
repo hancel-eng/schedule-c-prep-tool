@@ -124,11 +124,14 @@ def test_merged_credit_card_payment_is_still_excluded_from_pnl():
 # --- Vendor credits shouldn't inflate gross receipts ------------------------
 
 def test_card_credit_refund_excluded_from_gross_receipts():
+    """A vendor purchase credit is its own category, distinct from a genuine
+    tax refund -- lumping them together made 15 of 16 "Tax Refund" items on a
+    real engagement actually be Home Depot/O'Reilly/Amazon credits."""
     categorizer = TaxCategorizer()
     cat, _, _ = categorizer.categorize_transaction(
         "Card Credit The Home Depot", "Card Credit The Home Depot", 44.27, True
     )
-    assert cat == "Non-P&L: Tax Refund / Reimbursement"
+    assert cat == "Non-P&L: Vendor Purchase Credit"
 
 
 # --- Word-boundary keyword matching -----------------------------------------

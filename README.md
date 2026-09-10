@@ -52,7 +52,7 @@ the app is never guessing what an answer meant:
 
 | Question type | Answer choices | What happens |
 |---|---|---|
-| Expense Verification | Business / Personal / Unclear | *Personal* excludes the transaction from the P&L entirely; *Business* upgrades it to High Confidence |
+| Expense Verification | Business / Personal / Owner Draw / Unclear | *Personal* and *Owner Draw* both exclude the group from the P&L entirely (as different Non-P&L categories); *Business* upgrades it to High Confidence |
 | Asset Purchase | Confirmed Asset / Not an Asset / Unclear | *Confirmed Asset* recategorizes to Line 13 (Depreciation/Section 179) and logs the client's placed-in-service detail for the preparer |
 | Uncategorized Expense | any real Schedule C category | Recategorizes and upgrades confidence — an answer that isn't one of the tool's own categories is logged for manual mapping, never guessed at |
 | Form 1099 Verification | Filed / Will File / Not Required | Logged as a compliance note against the contractor; no dollar amount changes |
@@ -90,8 +90,25 @@ as a pass — an unverifiable statement is a finding the preparer needs to see.
 ### Excluded from income and expense totals
 
 Internal transfers, credit card payments, loan proceeds and repayments, owner
-draws and contributions, and refunds/reimbursements are detected, labeled
-`Non-P&L: …`, excluded from the P&L, and listed on their own sheet.
+draws and contributions, tax refunds, vendor purchase credits, and returned/
+reversed deposits are detected, labeled `Non-P&L: …`, excluded from the P&L,
+and listed on their own sheet. A tax refund and a vendor purchase credit
+(money back from an earlier purchase — Home Depot, Amazon, O'Reilly) are
+separate categories: on a real engagement, folding them together made 15 of
+16 items in one bucket actually be vendor credits, reading as if there were
+15 tax refunds to a preparer skimming the sheet.
+
+### Grouped client questions and a materiality threshold
+
+An "Expense Verification" question groups every matching transaction from
+the same vendor or P2P-payment recipient into one question, not one per
+charge — on a real engagement this collapsed 109 individual Cash App
+payments into 7 questions, one per person actually paid. The sidebar's
+**Client Question Materiality Threshold** drops a vendor group's question
+entirely when its total doesn't clear the threshold (default $0, so nothing
+is suppressed unless set) — the threshold applies to the group's total, not
+each individual charge, so several small charges that add up past it still
+generate a question.
 
 ## Key design decisions
 

@@ -22,7 +22,7 @@ from core.transaction_utils import transaction_key
 # (or an Excel data-validation dropdown, for a preparer working offline)
 # should be built from these, not free text.
 ANSWER_OPTIONS = {
-    "Expense Verification": ["", "Business", "Personal", "Unclear"],
+    "Expense Verification": ["", "Business", "Personal", "Owner Draw", "Unclear"],
     "Asset Purchase": ["", "Confirmed Asset", "Not an Asset", "Unclear"],
     "Form 1099 Verification": ["", "Filed", "Will File", "Not Required"],
     # Populated at call time from the categorizer's own category list, so it
@@ -32,6 +32,12 @@ ANSWER_OPTIONS = {
 
 PERSONAL_CONFIRMED_CATEGORY = "Non-P&L: Personal Expense (Client Confirmed)"
 ASSET_CONFIRMED_CATEGORY = "Line 13: Depreciation and section 179"
+# The existing Non-P&L category, not a new one -- an owner draw is already a
+# recognized exclusion, this just gives a client's answer a direct path to
+# it. Added after a real vendor group ("Cash App*dakota") turned out to
+# likely be the business owner paying himself, which is neither a business
+# expense nor a personal one in the sense those two answers mean.
+OWNER_DRAW_CATEGORY = "Non-P&L: Owner Draw / Contribution"
 
 _VALID_RECATEGORIZATION_TARGETS = set(SCHEDULE_C_CATEGORIES.keys()) | {
     "Non-P&L: Internal Transfer",
@@ -40,6 +46,7 @@ _VALID_RECATEGORIZATION_TARGETS = set(SCHEDULE_C_CATEGORIES.keys()) | {
     "Non-P&L: Loan Proceeds / Repayment",
     "Non-P&L: Tax Refund / Reimbursement",
     "Non-P&L: Returned/Reversed Deposit",
+    "Non-P&L: Vendor Purchase Credit",
 }
 
 
@@ -84,10 +91,15 @@ def apply_client_answers(transactions: List[Dict[str, Any]],
 
 
 def _matching_transactions(q: Dict[str, Any], by_key: Dict[str, List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
-    key = q.get("transaction_key")
-    if not key:
-        return []
-    return by_key.get(key, [])
+    # transaction_keys is a list even for a single-transaction question (see
+    # core/question_generator.py) -- an "Expense Verification" question can
+    # carry many keys when it represents a whole vendor group (see
+    # core/vendor_grouping.py), and one answer applies to every one of them.
+    keys = q.get("transaction_keys") or []
+    matches = []
+    for key in keys:
+        matches.extend(by_key.get(key, []))
+    return matches
 
 
 def _log(correction_log, q, matched_count, old_category, new_category, note, applied):
@@ -133,6 +145,17 @@ def _apply_expense_verification(q, answer, by_key, correction_log):
         _log(correction_log, q, len(matches), old_cat, PERSONAL_CONFIRMED_CATEGORY,
              "Client confirmed this was a personal expense -- excluded from "
              "Schedule C entirely.", True)
+    elif answer == "Owner Draw":
+        old_cat = matches[0]["category"]
+        for tx in matches:
+            tx["category"] = OWNER_DRAW_CATEGORY
+            tx["confidence_state"] = "High Confidence"
+            tx["client_confirmed"] = True
+            tx["confidence_score"] = 1.0
+            tx["original_category"] = tx.get("original_category", "") or old_cat
+        _log(correction_log, q, len(matches), old_cat, OWNER_DRAW_CATEGORY,
+             "Client confirmed this was the owner drawing funds from the "
+             "business -- excluded from Schedule C entirely.", True)
     # "Unclear" or any other value: leave the exception open, no change.
 
 

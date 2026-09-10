@@ -381,3 +381,98 @@ end-to-end could not be automated — the merge-by-`item_id` logic itself is
 covered directly in `tests/test_answer_applier.py`, but the last mile (does
 typing "Personal" into the live grid actually reach that logic) needs a
 manual click-through the first time this ships.
+
+---
+
+## Six fixes from the 2026-09-10 diagnostic review
+
+Hans reviewed the workpaper produced after the client-answer feedback loop
+shipped, diagnosed six specific issues (without changing any code), and
+approved all six for the same session. Each is described with the real
+numbers that motivated it; each is verified against the same 34 real files.
+
+1. **"Card Credit" split into its own category.** Was folded into
+   `Non-P&L: Tax Refund / Reimbursement`; on the real engagement 15 of 16
+   items in that bucket were vendor purchase credits (Home Depot, Amazon,
+   O'Reilly) and only 1 an actual IRS refund — misleading to a preparer
+   skimming the sheet. Now `Non-P&L: Vendor Purchase Credit`.
+
+2. **Credit card reconciliation redesigned around payments vs. charges,
+   not deposits vs. withdrawals.** `is_deposit` reflects the business's own
+   cash flow; on a credit card almost nothing is ever "money into the
+   business" in that sense (a payment and a new charge are both
+   `is_deposit=False`), so comparing declared payments against a
+   near-always-zero extracted-deposits figure flagged 9 of 11 real Capital
+   One statements as a discrepancy regardless of whether anything was
+   actually missing. `extracted_deposits`/`extracted_withdrawals` for a
+   `credit_card` document are now computed from category
+   (`Non-P&L: Credit Card Payment` vs. everything else) instead of
+   `is_deposit`. Verified: `deposit_difference` is now `0.0` or `None` on
+   9 of 11 real statements (was a discrepancy on all 9). The residual
+   `withdrawal_difference` gaps that remain ($44–$137 on most files) are a
+   separate, already-documented issue — the Account Summary box's
+   "Interest Charged"/"Fees Charged" sub-lines aren't always captured due to
+   a two-column PDF merge artifact that varies by statement — not addressed
+   here; two of the six could not both be root-caused to the exact same
+   two-column-merge cause in the time available, and this one was scoped
+   narrower (the comparison axis, not the box-capture completeness).
+3. **Cleared-checks regex now accepts a missing check number and an
+   asterisk before the amount.** Two real statements list a check with
+   *no* check number at all between date and amount (`09/17  8,000.00`);
+   one marks a "Break In Check Number Sequence" with a literal asterisk
+   between the number and the amount (`1272 * 260.00`). Both silently
+   failed to match before. Recovers $9,500 (Sept), $4,000 (June), $260
+   (Dec) of real check expense that was previously missing entirely — all
+   three statements now show `Reconciled`.
+4. **"Returned Deposit Item" no longer forced `is_deposit=True`.** Its own
+   description contains the word "deposit", which `DEPOSIT_KEYWORDS`
+   matched regardless of the fact that a real statement lists it inside the
+   WITHDRAWALS section (a bounced check correctly reduces the balance).
+   Added to `WITHDRAWAL_KEYWORDS`, checked first. Zero P&L dollar impact
+   (already excluded via its own Non-P&L category either way) — this was a
+   `Deposit?` column / reconciliation accuracy fix, and it closed the
+   remaining Regions discrepancy exactly (the $2,100 mirrored over/under
+   extraction is now gone).
+5. **Repeated vendor charges now group into one client question.** 109
+   individual "Cash App" line items on the real engagement were only 7
+   distinct recipients. `core/vendor_grouping.py` groups by vendor (P2P
+   apps grouped by service + recipient specifically, so "Cash App*dakota"
+   and "Cash App*moe" never merge) and a new sidebar **Client Question
+   Materiality Threshold** drops a group's question entirely when its
+   total doesn't clear it — applied to the group's total, not each charge,
+   so several small charges that add up past the threshold still ask.
+   `transaction_key` (singular) became `transaction_keys` (a list,
+   universally, even for the ungrouped question types) so one answer can
+   apply to every transaction in a group.
+6. **"Owner Draw" added as an Expense Verification answer.** The largest
+   Cash App group by dollar amount ("dakota", $14,656 across 50 payments)
+   is very likely the business owner's own name appearing throughout the
+   statements ("Dakota C Gearheart") — neither a business expense nor a
+   personal one in the sense those two answers mean. Recategorizes to the
+   existing `Non-P&L: Owner Draw / Contribution` category.
+
+### Net effect on the real engagement
+
+- Reconciliation: 14 of 34 documents in `Discrepancy` → 10 (all four
+  Regions bank-statement discrepancies resolved; the residual 9 Capital One
+  + 1 unrelated are the separately-scoped Account Summary box gap noted in
+  fix #2).
+- Client questions: 109 individual Expense Verification items → 7 grouped
+  questions.
+- Total Expenses: $225,002.29 → $238,762.29 (+$13,760.00, exactly the three
+  previously-unextracted checks from fix #3 — a more complete number, not a
+  new error).
+- Net Profit swung from **+$10,943.90 to –$2,816.10** as a direct result of
+  including those previously-invisible checks. Flagged explicitly because
+  it changes the bottom-line sign, not just a line-item detail.
+
+### Known nuance not addressed
+
+The P2P vendor-group key doesn't distinguish a charge from a same-vendor
+refund/credit (e.g. "Card Purchase Cash App*dakota" and "Card Credit Cash
+App*dakota" group together), so answering a group's question also
+recategorizes any refund transaction it swept in. Zero P&L impact (a refund
+was already excluded via its own Non-P&L category before the group answer,
+and stays excluded after, just filed under a different Non-P&L label) — a
+cosmetic relabeling, not a correctness issue, but worth knowing about before
+reading too much into which Non-P&L subcategory a given refund landed in.

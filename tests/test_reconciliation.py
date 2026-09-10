@@ -81,11 +81,42 @@ def test_credit_card_balance_direction_is_reversed():
         "total_deposits": 200.00,      # payments/credits
         "total_withdrawals": 500.00,   # purchases/charges
     }
-    transactions = [_tx(200.00, True), _tx(-500.00, False)]
+    # A credit card payment is is_deposit=False (it's money leaving the
+    # business's checking account) -- extraction distinguishes a payment from
+    # a new charge by category, not by is_deposit. See
+    # test_credit_card_reconciliation_uses_category_not_is_deposit below for
+    # the regression this pins.
+    payment = dict(_tx(-200.00, False), category="Non-P&L: Credit Card Payment")
+    charge = dict(_tx(-500.00, False), category="Line 27a: Other expenses (Uncategorized)")
+    transactions = [payment, charge]
 
     result = checker.check_document("card.pdf", summary, transactions)
 
     # 500 + 500 charges - 200 payments == 800
+    assert result["status"] == "Reconciled"
+
+
+def test_credit_card_reconciliation_uses_category_not_is_deposit():
+    """A real regression: summing by is_deposit compared declared payments
+    against a number that's near-zero on a real credit card (almost nothing
+    is genuinely "money into the business" on a card), flagging every single
+    card statement as a discrepancy regardless of whether anything was
+    actually missing -- confirmed on 9 of 11 real Capital One statements
+    with correct extraction underneath. A payment is a real Non-P&L category,
+    not a deposit."""
+    checker = ReconciliationChecker()
+    summary = {
+        "document_type": "credit_card",
+        "beginning_balance": 4280.82,
+        "ending_balance": 2193.83,
+        "total_deposits": 2250.00,   # "Payments" from the account summary box
+        "total_withdrawals": 163.01,  # "Transactions" (new charges)
+    }
+    payment = dict(_tx(-2250.00, False), category="Non-P&L: Credit Card Payment")
+    purchase = dict(_tx(-163.01, False), category="Line 9: Car and truck expenses")
+
+    result = checker.check_document("card.pdf", summary, [payment, purchase])
+
     assert result["status"] == "Reconciled"
 
 

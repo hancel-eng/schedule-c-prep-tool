@@ -48,6 +48,12 @@ tax_year = st.sidebar.number_input("Tax Year", value=2026, step=1)
 st.sidebar.markdown("---")
 st.sidebar.header("⚙️ De Minimis & Tax Rules")
 de_minimis_threshold = st.sidebar.number_input("Fixed Asset Threshold ($)", value=2500.0, step=100.0)
+materiality_threshold = st.sidebar.number_input(
+    "Client Question Materiality Threshold ($)", value=0.0, step=1.0,
+    help="A vendor group whose total is at or below this amount gets no client "
+         "question at all -- no one needs to be asked about a single $3 charge. "
+         "Applies to the group's total, not each individual charge."
+)
 
 # Local Payee Override Rule Manager
 st.sidebar.markdown("---")
@@ -65,6 +71,7 @@ with st.sidebar.expander("➕ Add Custom Payee Rule"):
         "Non-P&L: Loan Proceeds / Repayment",
         "Non-P&L: Tax Refund / Reimbursement",
         "Non-P&L: Returned/Reversed Deposit",
+        "Non-P&L: Vendor Purchase Credit",
     ])
     if st.button("Save Local Rule"):
         if new_payee:
@@ -206,7 +213,9 @@ if uploaded_files:
     # about the underlying transaction changes to naturally exclude it the
     # way an answered personal-expense or uncategorized question does.
     q_gen = ClientQuestionGenerator()
-    questions = q_gen.generate_question_list(exceptions, client_name=client_name)
+    questions = q_gen.generate_question_list(
+        exceptions, client_name=client_name, materiality_threshold=materiality_threshold
+    )
     resolved_contractors = {
         entry["payee"] for entry in correction_log
         if entry.get("question_category") == "Form 1099 Verification" and entry.get("applied")
@@ -357,14 +366,15 @@ if uploaded_files:
             if not subset:
                 st.caption("Nothing open in this category.")
                 return
-            df = pd.DataFrame(subset)[["item_id", "date", "payee", "amount", "question", "client_response", "answer"]]
+            df = pd.DataFrame(subset)[["item_id", "date", "payee", "count", "amount", "question", "client_response", "answer"]]
             edited = st.data_editor(
                 df,
                 column_config={
                     "item_id": st.column_config.TextColumn("ID", disabled=True, width="small"),
-                    "date": st.column_config.TextColumn("Date", disabled=True, width="small"),
+                    "date": st.column_config.TextColumn("Date(s)", disabled=True, width="small"),
                     "payee": st.column_config.TextColumn("Payee", disabled=True),
-                    "amount": st.column_config.TextColumn("Amount", disabled=True, width="small"),
+                    "count": st.column_config.NumberColumn("# Txns", disabled=True, width="small"),
+                    "amount": st.column_config.TextColumn("Total", disabled=True, width="small"),
                     "question": st.column_config.TextColumn("Question", disabled=True, width="large"),
                     "client_response": st.column_config.TextColumn("Notes from client (free text)"),
                     "answer": st.column_config.SelectboxColumn("Answer", options=answer_options, required=False, width="medium"),
@@ -384,7 +394,7 @@ if uploaded_files:
         st.markdown("")
         if st.button("✅ Apply Client Answers & Recalculate Workpaper", type="primary"):
             # Merge the edited Answer / Notes columns back into the full
-            # question objects (which still carry transaction_key/contractor,
+            # question objects (which still carry transaction_keys/contractor,
             # stripped out of the editor view above to keep it readable).
             answered_questions = []
             for q in questions:

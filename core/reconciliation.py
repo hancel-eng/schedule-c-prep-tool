@@ -43,12 +43,35 @@ class ReconciliationChecker:
         )
         doc_type = statement_summary.get("document_type", "unknown")
 
-        extracted_deposits = sum(
-            tx["amount"] for tx in transactions if tx.get("is_deposit")
-        )
-        extracted_withdrawals = sum(
-            abs(tx["amount"]) for tx in transactions if not tx.get("is_deposit")
-        )
+        if doc_type == "credit_card":
+            # is_deposit reflects the business's own cash flow (money into
+            # vs. out of the checking account), not which way a dollar moves
+            # the CARD's balance -- and on a credit card almost nothing is
+            # ever "money into the business" in that sense, so a payment and
+            # a new charge are both is_deposit=False. Summing by is_deposit
+            # here compared "declared payments" against a number that could
+            # only ever be genuine refund credits (near zero), which flagged
+            # every single card statement as a discrepancy regardless of
+            # whether anything was actually missing (confirmed: 9 of 11 real
+            # statements failed this way with correct extraction underneath).
+            # The right comparison uses the same balance-effect axis the
+            # declared figures use: payments reduce the balance, new charges
+            # (purchases, fees, interest) increase it.
+            extracted_deposits = sum(
+                abs(tx["amount"]) for tx in transactions
+                if tx.get("category") == "Non-P&L: Credit Card Payment"
+            )
+            extracted_withdrawals = sum(
+                abs(tx["amount"]) for tx in transactions
+                if not tx.get("is_deposit") and tx.get("category") != "Non-P&L: Credit Card Payment"
+            )
+        else:
+            extracted_deposits = sum(
+                tx["amount"] for tx in transactions if tx.get("is_deposit")
+            )
+            extracted_withdrawals = sum(
+                abs(tx["amount"]) for tx in transactions if not tx.get("is_deposit")
+            )
 
         result = {
             "source_file": filename,
@@ -107,10 +130,13 @@ class ReconciliationChecker:
                 f"${balance_difference:,.2f}."
             )
 
+        deposit_label = "payments" if doc_type == "credit_card" else "deposits"
+        withdrawal_label = "charges" if doc_type == "credit_card" else "withdrawals"
+
         if deposit_difference is not None and abs(deposit_difference) > TOLERANCE:
             failed = True
             notes.append(
-                f"${abs(deposit_difference):,.2f} of declared deposits was "
+                f"${abs(deposit_difference):,.2f} of declared {deposit_label} was "
                 f"{'not extracted' if deposit_difference > 0 else 'over-extracted'}. "
                 f"Statement declares ${declared_deposits:,.2f}; "
                 f"${extracted_deposits:,.2f} was captured."
@@ -119,7 +145,7 @@ class ReconciliationChecker:
         if withdrawal_difference is not None and abs(withdrawal_difference) > TOLERANCE:
             failed = True
             notes.append(
-                f"${abs(withdrawal_difference):,.2f} of declared withdrawals was "
+                f"${abs(withdrawal_difference):,.2f} of declared {withdrawal_label} was "
                 f"{'not extracted' if withdrawal_difference > 0 else 'over-extracted'}. "
                 f"Statement declares ${declared_withdrawals:,.2f}; "
                 f"${extracted_withdrawals:,.2f} was captured."

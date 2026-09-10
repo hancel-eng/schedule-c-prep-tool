@@ -159,10 +159,15 @@ NON_PNL_PATTERNS = {
         # statement. "\brefund\b" alone never matches this.
         r"\birs\s+treas\s+\d+\s+tax\s+ref\b",
         r"\btax\s+ref\b",
-        # A vendor credit on a card/account -- e.g. "Card Credit The Home
-        # Depot" on a real statement -- is money coming back for an earlier
-        # purchase, not new business revenue. Without this, a deposit-side
-        # vendor credit falls straight through to Income: Gross Receipts.
+    ],
+    # A vendor credit on a card/account -- e.g. "Card Credit The Home Depot"
+    # on a real statement -- is money coming back for an earlier purchase,
+    # not a tax refund and not new business revenue. Kept as its own category
+    # rather than folded into "Tax Refund / Reimbursement": on a real
+    # engagement 15 of 16 items in that bucket turned out to be vendor
+    # credits and only 1 an actual IRS refund, which reads as if there were
+    # 15 tax refunds to a preparer skimming the sheet.
+    "Non-P&L: Vendor Purchase Credit": [
         r"\bcard\s+credit\b",
         r"\bpurchase\s+return\b",
         r"\bmerchandise\s+credit\b",
