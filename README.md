@@ -1,43 +1,92 @@
 # Schedule C Prep Tool
 
-Turns messy small-business financial records — bank and credit card statement
-PDFs, client spreadsheets, and year-end totals — into a standardized,
-audit-ready IRS Schedule C workpaper and a ready-to-send client question
-list for a tax preparer.
+Turns messy small-business financial records — bank and credit card
+statement PDFs, client spreadsheets, and year-end totals — into a
+standardized, audit-ready IRS Schedule C workpaper, plus a ready-to-send
+list of questions for the client. Built for tax preparers.
 
-Built for **Tax Savers CPA**, replacing a manual process of running 12
-months of statements per client through a chat assistant by hand.
+## Try it now
 
-**Extraction runs entirely offline.** Parsing and categorization are
-rule-based (`pdfplumber` + regex + an IRS keyword dictionary). No external
-LLM API key is required or called — this was a deliberate choice over the
-API-based prototype it replaced: deterministic, auditable, no API cost, no
-rate limits, no truncated output on large statements.
+**Live app: [schedule-c-prep-tool.streamlit.app](https://schedule-c-prep-tool.streamlit.app/)**
 
-**Primary goal:** the tool exists to save a preparer the time of manually
-hunting through statements for ambiguous transactions and drafting client
-questions by hand. Speed from "upload the files" to "have a sendable
-question list" is the metric everything else is weighed against — not
-exhaustiveness. Keep this in mind before adding anything to the UI or the
-default workflow.
-
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** — how the code is organized, the
-  pipeline in detail, and technical notes worth knowing before changing
-  anything (Streamlit's session-state pattern, the visual theme's
-  constraints, design decisions and why).
-- **[CHANGELOG.md](CHANGELOG.md)** — dated history of what changed and why,
-  including bugs found and fixed against real client data.
+No installation needed — open the link, upload a client's statements, and
+try the workflow yourself. (The sample files in `sample_data/` are safe to
+upload if you don't have real client files handy.)
 
 ---
 
-## Quick start
+## Who this is for
+
+Built for **Tax Savers CPA**. Their preparers currently process a client's
+Schedule C by manually reading 12 months of bank/credit-card statements
+(or running them through a general chat assistant) and typing up the
+result by hand — slow, and easy to miscount or miss something. This tool
+automates that first pass.
+
+Tax Savers' clients arrive in two tiers:
+
+- **Level 2** — the client sends full bank/credit-card statements. **This
+  is what this tool handles today.**
+- **Level 1** — the client sends only their own messy, inconsistently
+  formatted expense totals, no statements. Not built yet — a separate tool
+  may be needed once real examples of this kind of client data are
+  available.
+
+## What it does, in plain terms
+
+1. You upload a client's bank/credit-card statement PDFs (and/or
+   spreadsheets) for a tax year.
+2. The tool reads every transaction, figures out whether it's income or an
+   expense, and sorts it into the right line of IRS Schedule C.
+3. It automatically excludes things that aren't real business income or
+   expense — transfers between the client's own accounts, credit card
+   payments, loan money coming in or going out, the owner taking money out
+   of the business.
+4. Anything it can't confidently sort — a payment that might be personal, a
+   purchase that might be a fixed asset, a vendor it doesn't recognize —
+   becomes a short, plain-English question for the client, automatically
+   grouped so you're not asking the same question 50 times about the same
+   vendor.
+5. You send those questions to the client however you normally would (the
+   tool never sends anything itself). When you have the answers, you type
+   them in and the whole workpaper — totals included — updates instantly.
+6. You download a formatted Excel workbook, ready for the preparer.
+
+**The tool's main job is speed: getting from "here are the client's
+statements" to "here's the list of things I need to ask the client" as
+fast as possible** — not perfection on the first pass. Getting the numbers
+right matters, but the time saved on the question list is the actual point.
+
+## Is it ready to use?
+
+**Yes, for Level 2 clients (full bank/credit-card statements).** It has
+been run against a real 34-statement, 12-month client engagement, with
+every bug found along the way fixed and the final numbers checked by hand.
+See [CHANGELOG.md](CHANGELOG.md) for the full history of what was found and
+fixed.
+
+**Two things worth knowing before relying on it for a new client:**
+
+- It can't read a *scanned image* of a statement (a photo of a check, for
+  example) — only PDFs with real, selectable text. There's no OCR yet.
+- Its extraction rules were built and tested against two specific banks
+  (Regions and Capital One). A statement from a different bank will still
+  process, but may need a small rule adjustment the first time — check the
+  **Reconciliation QC** section of the results before trusting a brand-new
+  bank's numbers.
+
+See [Known limitations & roadmap](#known-limitations--roadmap) below for
+the complete list.
+
+---
+
+## Quick start (running it yourself, not the live link above)
 
 **Option A — GitHub Codespaces, no local setup.** Open this repo in a
-Codespace (`.devcontainer/devcontainer.json` is already configured) — it
-installs `requirements.txt` and starts `streamlit run app.py` automatically,
-with the app's port forwarded and previewed for you.
+Codespace (it's already configured via `.devcontainer/`) — it installs
+everything and starts the app automatically, with a live preview.
 
-**Option B — locally:**
+**Option B — on your own computer:**
 
 ```bash
 python3 -m venv venv
@@ -46,182 +95,116 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-In the browser: enter the client name and tax year in the sidebar, upload
-the client's statement PDFs and/or spreadsheets, review the **Client
-Inquiry Questions** tab, and download the Excel workpaper. See
-[Usage](#usage) below for the full workflow.
+## How to use it
 
-To regenerate the synthetic files in `sample_data/`:
+1. **Sidebar** — enter the client's name, the tax year, the fixed-asset
+   ("de minimis") dollar threshold, and the client-question materiality
+   threshold (a vendor whose total spend doesn't clear this amount gets no
+   question at all — leave it at $0 to ask about everything).
+2. **Upload** — the client's bank/credit-card statement PDFs and/or
+   spreadsheets for the full tax year. Don't upload a P&L summary
+   *alongside* the statements it summarizes — that counts the same money
+   twice. Use one or the other.
+3. **Review "Client Inquiry Questions"** (the first tab) — each open
+   question has an **Answer** dropdown with a fixed set of choices, never a
+   free-text box, so the tool is never guessing what you meant.
+4. **Send the questions to the client**, however you normally do that.
+5. **Enter the client's answers** in the same Answer column and click
+   **Apply Client Answers & Recalculate Workpaper** — everything updates
+   immediately, and an answered question won't come back.
+6. **Download the Excel workpaper.**
 
-```bash
-python create_sample_data.py
-```
-
-To run the test suite:
-
-```bash
-pytest
-```
+Nothing is saved between sessions — uploading a new client's files starts
+completely fresh. Nothing is written to a database; everything lives only
+in your browser tab while you're working.
 
 ---
 
-## What it does
+## What the Excel workpaper contains
 
-```
-messy client documents
-        │  filename deduplication (skip an exact-name duplicate upload)
-        ▼
-   extraction        PDF (bank / credit card / P&L report) or spreadsheet
-        ▼
-   normalization     dates, payees, amounts, deposit vs. expense, sign convention
-        ▼
-   tax categorization   IRS Schedule C line items, or excluded as Non‑P&L
-        ▼
-   exception review   review queues + an auto-generated, groupable client
-        │              question list, with a materiality threshold
-        ▼
-   [ preparer answers the questions in-app, or via the client ]
-        ▼
-   recalculation      answers are applied, totals and the workpaper update
-        ▼
-   Excel workpaper  →  tax preparer
-```
-
-## What it produces
-
-Every run outputs a formatted `.xlsx` workbook with seven sheets:
-
-| Sheet | Contents |
+| Sheet | What's on it |
 |---|---|
-| **Schedule C Summary** | Client/year header, gross receipts (Line 1), expense breakdown by IRS line, total expenses (Line 28), net profit/loss (Line 31) — with live formulas |
-| **All Transactions** | Full audit trail: date, payee, description, amount, deposit flag, final category, original client category, confidence state, source file |
-| **Non-P&L & Transfers** | Everything excluded from the P&L, with the reason |
-| **Exceptions Queue** | Potential personal expenses and potential fixed assets, each with an audit note |
-| **Client Questions** | Auto-generated inquiry checklist, plus the answer once resolved in-app |
-| **Reconciliation QC** | Per-statement reconciliation, 12-month coverage, duplicate files skipped |
-| **Applied Client Answers** | Audit trail of every correction the workpaper picked up from an answered question — old category, new category, and why |
+| **Schedule C Summary** | Gross receipts, expenses by IRS line, total expenses, net profit/loss |
+| **All Transactions** | Every transaction, with its final category and where it came from — the full audit trail |
+| **Non-P&L & Transfers** | Everything excluded from the totals, and why |
+| **Exceptions Queue** | Possible personal expenses and possible fixed assets, flagged for review |
+| **Client Questions** | The question list, plus the client's answer once it's entered |
+| **Reconciliation QC** | Whether each statement's numbers were captured completely and correctly |
+| **Applied Client Answers** | A log of every change the workpaper made once a question was answered |
 
-A Streamlit dashboard shows the same data interactively before export. Three
-tabs are visible by default — **Client Inquiry Questions** (first, editable,
-the actual deliverable), **Schedule C Summary**, and **Non-P&L Transfers** —
-with line-item search, per-statement reconciliation detail, and
-large-transaction review tucked behind a collapsed **"audit detail"**
-expander: real, but not needed on every run. See
-[ARCHITECTURE.md](ARCHITECTURE.md) for how the dashboard and its progress
-panel are built.
+## A few design choices worth knowing
 
-## Usage
-
-1. **Sidebar** — enter the client name, tax year, the fixed-asset ("de
-   minimis") threshold, and the client-question materiality threshold (a
-   vendor group whose total doesn't clear this amount gets no question at
-   all — leave at $0 to ask about everything).
-2. **Upload** — bank/credit-card statement PDFs and/or client spreadsheets
-   for the full tax year. Uploading a P&L summary *alongside* the statements
-   it summarizes double-counts the same activity — use one source or the
-   other, not both (see [Known limitations](#known-limitations--roadmap)).
-3. **Review "Client Inquiry Questions"** — each open question (a possible
-   personal expense, a possible fixed asset, an uncategorized transaction, a
-   contractor near the 1099 threshold) has an editable **Answer** dropdown
-   constrained to a fixed set of choices, never free text. Send the
-   questions to the client however you normally do — the tool never sends
-   anything itself.
-4. **Apply the client's answers** — once you have them, enter them in the
-   **Answer** column and click **Apply Client Answers & Recalculate
-   Workpaper**. The dashboard, exception queues, and Excel export all update
-   immediately; an answered question does not reappear on the next
-   recompute.
-5. **Download the Excel workpaper.**
-
-Everything above lives only inside the current browser session — "one
-client = one session," nothing is written to a database. Uploading a
-different set of files starts a new client with a clean slate.
-
-## Key design decisions
-
-- **One client = one session.** All of a client's files are uploaded
-  together, processed, and the workpaper is downloaded. No state persists
-  between runs or between clients.
-- **Deduplication is filename-based, never transaction-based.** Comparing
-  individual transactions by date/amount/vendor was tried and rejected: it
-  risked silently dropping legitimate transactions that happened to share
-  those fields. If the same filename is uploaded twice in a session, the
-  second is blocked with a warning. If filenames are distinct, every
-  transaction in every file is kept.
-- **Rule-based extraction over LLM extraction** (see above).
-- **Confidence labels, never a guess.** Every transaction is tagged
-  **High Confidence**, **Needs Review**, or **Unresolved**. Anything short
-  of High Confidence lands in the exception queue instead of being silently
-  assigned a category.
+- **The tool never guesses.** Every transaction is labeled High Confidence,
+  Needs Review, or Unresolved. Anything short of High Confidence goes to
+  the exception/question list instead of being silently assigned a
+  category.
+- **No AI/LLM is used to read the statements.** Extraction is done with
+  deterministic rules (pattern matching against real statement text), not
+  a language model — cheaper, faster on large files, and every result can
+  be traced back to exactly why the tool made that call.
+- **One client, one session.** Nothing carries over between clients, and
+  nothing is stored outside your browser tab while you're working.
+- **Duplicate files are caught by filename, not by comparing individual
+  transactions** — comparing transactions risked accidentally throwing away
+  a real transaction that happened to look like a duplicate.
 
 ## Project layout
 
 ```
-app.py                        Streamlit UI and end-to-end orchestration
-theme.py                      Visual design tokens + CSS injected into app.py
-.streamlit/config.toml        Streamlit's own theme engine (native widgets)
+app.py                        The app itself (Streamlit)
+theme.py                      Visual design (colors, fonts, layout)
+.streamlit/config.toml        Streamlit's own theme settings
 
-core/
-  pdf_parser.py                PDF extraction — 3 strategies (P&L report,
-                                credit card, general bank/receipt), routed by filename
-  spreadsheet_parser.py        Excel/CSV normalization across varied client formats
-  totals_parser.py             Year-end totals → Schedule C lines + special-rule flags
-  tax_categorizer.py           IRS keyword dictionary, Non-P&L patterns, custom rules
-  exception_analyzer.py        Exception review queues
-  vendor_grouping.py           Groups repeated vendor/recipient charges into one question
-  question_generator.py        Client question checklist
-  transaction_utils.py         Stable transaction identity, used to trace a question
-                                back to the exact transaction(s) it concerns
-  answer_applier.py            Applies an answered client question to the workpaper
-  reconciliation.py            Per-statement reconciliation against declared balances
-  excel_exporter.py            Formatted multi-sheet workpaper
-  deduplication.py             Filename-based duplicate file detection
+core/                         All the actual business logic, independent
+                               of the app — see ARCHITECTURE.md for detail
+  pdf_parser.py                 Reads bank/credit-card statement PDFs
+  spreadsheet_parser.py         Reads client Excel/CSV files
+  totals_parser.py              Reads client-provided year-end totals
+  tax_categorizer.py            Decides which Schedule C line a transaction belongs on
+  exception_analyzer.py         Flags what needs a second look
+  vendor_grouping.py            Groups repeated charges into one question
+  question_generator.py         Writes the client question list
+  transaction_utils.py          Internal bookkeeping (traces a question back to its transaction)
+  answer_applier.py             Applies a client's answer to the workpaper
+  reconciliation.py             Checks extraction against each statement's own totals
+  excel_exporter.py             Builds the final Excel file
+  deduplication.py              Catches duplicate file uploads
 
-tests/                        pytest suite (one file per core/ module, plus
-                               tests/test_real_world_regressions.py for bugs
-                               found against real client data — synthetic
-                               fixtures only, never real client files)
-sample_data/                  Synthetic sample documents (no real client data)
-create_sample_data.py         Regenerates sample_data/
+tests/                        Automated tests (one file per module above)
+sample_data/                  Made-up sample files, safe to upload/share
+create_sample_data.py         Regenerates the sample files
 ```
 
-## Custom payee rules
-
-`core/tax_categorizer.py` loads client-specific vendor → category mappings
-from `custom_rules.json` in the working directory, if that file exists.
-Custom rules take precedence over the built-in keyword dictionary (but not
-over Non-P&L detection). There is currently no in-app editor for this file
-— add or edit entries directly. It's gitignored: local, per-machine state,
-never committed.
+For how the pieces above actually work together, see
+**[ARCHITECTURE.md](ARCHITECTURE.md)**.
 
 ## Known limitations & roadmap
 
-- **No OCR.** A scanned-image PDF (e.g. a photo of a check) yields zero
-  transactions with no visible error, since `pdfplumber` can't extract text
-  from an image-only page.
-- **Year-end totals (client-provided summary numbers, no statements)** has a
-  complete parsing module (`core/totals_parser.py`) but isn't wired into the
-  UI yet — the `.json` upload option is accepted but not routed anywhere.
-  This is Tax Savers' "Level 1" client tier; a separate tool may end up
-  covering it once real client examples are available.
-- **Uploading a P&L alongside the statements it summarizes double-counts**
-  the same activity. The workflow currently relies on the preparer not doing
-  that; the app doesn't warn.
-- **Cross-account transfer matching** (the same transfer appearing as a
-  debit in one uploaded account and a credit in another) is only caught when
-  the description text itself is informative — there's no cross-file pairing
-  by date/amount yet.
-- **Bank statement parsing patterns are derived from the specific banks
-  tested against** (Regions, Capital One). The extraction architecture is
-  general-purpose, but a new bank's statement wording or layout may need new
-  patterns the first time it's tried — see
+- **No OCR.** A scanned image (not real text) yields zero transactions with
+  no error message — it just looks empty.
+- **The "Level 1" client tier (totals only, no statements) isn't built.**
+  Waiting on real example files from Tax Savers before starting this.
+- **Uploading a P&L summary alongside the statements it summarizes
+  double-counts** the same income and expenses. The tool doesn't warn about
+  this yet — just avoid doing it.
+- **Transfers between a client's own accounts, across two different
+  uploaded files,** are only caught when the transaction's own description
+  makes it obvious. There's no cross-file matching by date and amount yet.
+- **Extraction rules are proven against specific banks (Regions, Capital
+  One), not universal** — a new bank may need a small adjustment the first
+  time. See
   [ARCHITECTURE.md](ARCHITECTURE.md#extraction-is-pattern-based-not-universal).
 
-See [CHANGELOG.md](CHANGELOG.md) for what's already been fixed and verified
-against real client statements.
+See **[CHANGELOG.md](CHANGELOG.md)** for everything that's already been
+found and fixed.
 
-## Data handling
+## Keeping client data safe
 
-Do not commit real client financial documents. `.gitignore` excludes loose
-`.pdf`/`.xlsx`/`.csv` files and generated workpapers by default; `sample_data/`
-is synthetic and safe to commit.
+**Never commit real client financial documents to this repository.**
+`.gitignore` already blocks loose `.pdf`/`.xlsx`/`.csv` files and generated
+workpapers by default. `sample_data/` is made-up data and is safe to share.
+
+## Questions about this project
+
+Built and maintained by Hans (`hancel@gospectr.com`). The GitHub repo is
+[hancel-eng/schedule-c-prep-tool](https://github.com/hancel-eng/schedule-c-prep-tool).
