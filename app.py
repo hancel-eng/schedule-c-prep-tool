@@ -90,7 +90,7 @@ client_name = st.sidebar.text_input("Client Name / Business Name", value="Acme C
 tax_year = st.sidebar.number_input("Tax Year", value=2026, step=1)
 
 st.sidebar.markdown("---")
-st.sidebar.header("De Minimis & Question Rules")
+st.sidebar.header("Minimum & Question Rules")
 de_minimis_threshold = st.sidebar.number_input("Fixed Asset Threshold ($)", value=2500.0, step=100.0)
 materiality_threshold = st.sidebar.number_input(
     "Client Question Materiality Threshold ($)", value=0.0, step=1.0,
