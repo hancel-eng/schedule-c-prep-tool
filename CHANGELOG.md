@@ -8,6 +8,19 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for how the current system works,
 and [README.md](README.md#known-limitations--roadmap) for what's still
 open.
 
+## 2026-09-14 — Password gate and remaining Spanish text
+
+- Added a single shared-password gate in front of the whole app
+  (`check_password()` in `app.py`), so the public app URL alone isn't
+  enough to use the tool — the password lives in Streamlit secrets, never
+  in code. See [README.md](README.md#quick-start) for how to set it
+  locally and on Streamlit Community Cloud.
+- Translated the last remaining Spanish strings to English: the processing
+  panel's 4 step labels and per-file status lines (`theme.py`, `app.py`),
+  and the audit-detail expander label — all UI-facing text is now English
+  end to end, verified by driving `AppTest` through a real sample-file
+  upload and scanning the rendered output for Spanish characters.
+
 ## 2026-09-11 — Visual redesign
 
 - Dashboard rebuilt around the tool's primary success metric: speed from

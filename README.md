@@ -9,8 +9,9 @@ list of questions for the client. Built for tax preparers.
 
 **Live app: [schedule-c-prep-tool.streamlit.app](https://schedule-c-prep-tool.streamlit.app/)**
 
-No installation needed — open the link, upload a client's statements, and
-try the workflow yourself. (The sample files in `sample_data/` are safe to
+The app is password-protected — ask Hans for the access password. Once
+you're in, no installation is needed: upload a client's statements and try
+the workflow yourself. (The sample files in `sample_data/` are safe to
 upload if you don't have real client files handy.)
 
 ---
@@ -94,6 +95,22 @@ source venv/bin/activate
 pip install -r requirements.txt
 streamlit run app.py
 ```
+
+**Set an access password.** The app is gated behind a single shared
+password so a leaked link can't be used by a stranger. It's never stored
+in code — copy `.streamlit/secrets.toml.example` to
+`.streamlit/secrets.toml` (already gitignored) and set your own password
+there:
+
+```bash
+cp .streamlit/secrets.toml.example .streamlit/secrets.toml
+# then edit .streamlit/secrets.toml and set app_password = "..."
+```
+
+For the **live Streamlit Cloud app**, don't upload that file — open the
+app's dashboard, go to **Settings → Secrets**, and paste the same
+`app_password = "..."` line there instead. If no password is set, the app
+shows a warning on the login screen and nobody can get in.
 
 ## How to use it
 

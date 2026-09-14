@@ -13,6 +13,10 @@ __pycache__/
 # Local runtime state (client-specific categorization rules)
 custom_rules.json
 
+# App access password -- never commit the real one; see
+# .streamlit/secrets.toml.example
+.streamlit/secrets.toml
+
 # Client data — never commit real client financial documents
 client_data/
 uploads/

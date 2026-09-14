@@ -196,10 +196,10 @@ div[data-testid="stAlertContentInfo"]    { background: var(--ts-surface-alt); bo
 # Ordered steps shown in the processing-status panel. Key is an internal
 # handle app.py uses to mark a step done/active; label is what's shown.
 PROGRESS_STEPS = [
-    ("extract", "Extracción de transacciones"),
-    ("coverage", "Cobertura de 12 meses"),
-    ("reconcile", "Reconciliación"),
-    ("questions", "Generación de preguntas"),
+    ("extract", "Extracting transactions"),
+    ("coverage", "Checking 12-month coverage"),
+    ("reconcile", "Reconciling"),
+    ("questions", "Generating questions"),
 ]
 
 
@@ -208,7 +208,7 @@ def render_progress_steps(container, step_state, active_meta=""):
 
     step_state: {step_key: "done" | "active" | "pending"}. Any key not
     present defaults to "pending". active_meta: a short status line shown
-    under whichever step is currently "active" (e.g. "Procesando 12 de 34 --
+    under whichever step is currently "active" (e.g. "Processing 12 of 34 --
     filename.pdf") -- purely cosmetic, callers keep driving their own state.
     """
     rows = []

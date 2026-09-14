@@ -19,7 +19,7 @@ from theme import CSS, render_progress_steps
 # Bumped on every meaningful change to this file, so whoever is looking at the
 # app can tell which version is running just by glancing at the sidebar --
 # there is no separate deploy/build pipeline that would otherwise show that.
-APP_VERSION = "v3"
+APP_VERSION = "v4"
 
 # Page Configuration
 st.set_page_config(
@@ -32,6 +32,52 @@ st.set_page_config(
 # Visual theme only -- injected once, here, for the whole script run. See
 # theme.py; nothing below this line should add another <style> block.
 st.markdown(CSS, unsafe_allow_html=True)
+
+
+def _get_app_password() -> str:
+    """st.secrets.get() only guards a missing *key* -- when secrets.toml
+    doesn't exist at all (e.g. a fresh checkout before anyone has set it up),
+    st.secrets raises StreamlitSecretNotFoundError instead, which isn't a
+    KeyError and isn't caught by .get()'s own default. Treat "no secrets
+    file" the same as "no password configured" rather than crashing."""
+    try:
+        return st.secrets.get("app_password", "")
+    except FileNotFoundError:
+        return ""
+
+
+def check_password() -> bool:
+    """Gates the whole app behind one shared password so a link leak doesn't
+    let a stranger run client data through the tool. The password lives in
+    Streamlit secrets (.streamlit/secrets.toml locally, the "Secrets" panel
+    on Streamlit Community Cloud), never in code -- see
+    .streamlit/secrets.toml.example for the exact key it reads."""
+    if st.session_state.get("password_correct"):
+        return True
+
+    st.title("Schedule C Intake & Tax Prep Workpaper Tool")
+    st.caption("This tool is private. Enter the access password to continue.")
+
+    def _submit():
+        expected = _get_app_password()
+        entered = st.session_state.get("password_input", "")
+        st.session_state.password_correct = bool(expected) and entered == expected
+        del st.session_state["password_input"]
+
+    st.text_input("Password", type="password", key="password_input", on_change=_submit)
+
+    if st.session_state.get("password_correct") is False:
+        st.error("Incorrect password.")
+    if not _get_app_password():
+        st.warning(
+            "No app_password is configured in Streamlit secrets, so no password "
+            "will ever be accepted. See .streamlit/secrets.toml.example."
+        )
+    return False
+
+
+if not check_password():
+    st.stop()
 
 # Title & Description -- native title/caption so the theme's h1 styling and
 # secondary-text color apply without a bespoke CSS class per element.
@@ -122,7 +168,7 @@ if uploaded_files:
 
             for i, file_obj in enumerate(unique_files):
                 filename = file_obj.name
-                mark_steps("extract", f"{filename} · archivo {i + 1} de {len(unique_files)}")
+                mark_steps("extract", f"{filename} · file {i + 1} of {len(unique_files)}")
                 file_progress_slot.progress(i / len(unique_files))
 
                 if filename.lower().endswith('.pdf'):
@@ -141,7 +187,7 @@ if uploaded_files:
 
             file_progress_slot.empty()
 
-            mark_steps("coverage", f"{len(parsed_transactions):,} transacciones de {len(unique_files)} archivo(s)")
+            mark_steps("coverage", f"{len(parsed_transactions):,} transactions from {len(unique_files)} file(s)")
             coverage_info = pdf_parser.check_12_month_coverage(months_found)
 
             mark_steps("reconcile", coverage_info['status_message'])
@@ -159,7 +205,7 @@ if uploaded_files:
             st.session_state.duplicates_flagged = duplicates_flagged
             st.session_state.unique_file_count = len(unique_files)
         else:
-            mark_steps("questions", f"Usando los {st.session_state.unique_file_count} archivo(s) ya procesados en esta sesión")
+            mark_steps("questions", f"Using the {st.session_state.unique_file_count} file(s) already processed this session")
 
         # Every rerun (fresh parse or not) reads from session_state, so an
         # applied client answer is what the rest of the page actually sees.
@@ -201,7 +247,7 @@ if uploaded_files:
         ]
 
         mark_steps(None)  # all 4 steps done
-        st.caption(f"{len(questions)} pregunta(s) para el cliente")
+        st.caption(f"{len(questions)} question(s) for the client")
 
     if duplicates_flagged:
         for dup in duplicates_flagged:
@@ -377,7 +423,7 @@ if uploaded_files:
     # AUDIT DETAIL -- everything true, just not needed every run. Collapsed
     # by default so it never competes with the 3 tabs above for attention.
     # ----------------------------------------------------
-    with st.expander("Ver detalle de auditoría (line items, reconciliación por archivo, transacciones grandes)"):
+    with st.expander("View audit detail (line items, per-file reconciliation, large transactions)"):
         audit_tab1, audit_tab2, audit_tab3 = st.tabs([
             "All Line Items", "Reconciliation QC", "Unusual / Large Transactions"
         ])
