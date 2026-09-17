@@ -66,3 +66,40 @@ def test_de_minimis_threshold_is_configurable():
 
     higher_threshold = ExceptionAnalyzer().analyze_exceptions([tx], de_minimis_threshold=5000.0)
     assert higher_threshold["potential_fixed_assets"] == []
+
+
+# --- A Non-P&L transfer is never an asset purchase (raised in a client
+# meeting) -----------------------------------------------------------------
+
+def test_online_transfer_over_threshold_is_never_flagged_as_asset_purchase():
+    """A same-owner "Online Transfer To Chk ...2202" over the de minimis
+    threshold kept generating an "is this an asset purchase?" question,
+    purely because of its amount -- even though tax_categorizer.py had
+    already excluded it from the P&L entirely as an internal transfer. The
+    fix is scoped to the category (Non-P&L: *), not the word "transfer",
+    so it applies to any client's wording, not just this one's."""
+    tx = _tx("Online Transfer To Chk ...2202 Transaction#: 16425446690",
+             amount=-3000.0, category="Non-P&L: Internal Transfer")
+    result = ExceptionAnalyzer().analyze_exceptions([tx], de_minimis_threshold=2500.0)
+    assert result["potential_fixed_assets"] == []
+
+
+def test_owner_draw_over_threshold_is_also_never_flagged_as_asset_purchase():
+    """Same rule, different Non-P&L category -- confirms this isn't specific
+    to "transfer" wording but to any Non-P&L exclusion."""
+    tx = _tx("Owner Draw to Personal Checking", amount=-10000.0,
+             category="Non-P&L: Owner Draw / Contribution")
+    result = ExceptionAnalyzer().analyze_exceptions([tx], de_minimis_threshold=2500.0)
+    assert result["potential_fixed_assets"] == []
+
+
+def test_non_pnl_transaction_can_still_be_flagged_as_personal_expense():
+    """The asset-purchase exclusion above must not widen into suppressing
+    the personal-expense safety net for an auto-detected Non-P&L category --
+    see test_auto_detected_non_pnl_transaction_is_not_suppressed in
+    tests/test_answer_applier.py, which pins that the personal-expense check
+    still applies until a client actually confirms the transaction."""
+    tx = _tx("Target Corp Transfer", amount=-3000.0, category="Non-P&L: Internal Transfer")
+    result = ExceptionAnalyzer().analyze_exceptions([tx], de_minimis_threshold=2500.0)
+    assert result["potential_fixed_assets"] == []
+    assert len(result["potential_personal"]) == 1

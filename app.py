@@ -19,7 +19,7 @@ from theme import CSS, render_progress_steps
 # Bumped on every meaningful change to this file, so whoever is looking at the
 # app can tell which version is running just by glancing at the sidebar --
 # there is no separate deploy/build pipeline that would otherwise show that.
-APP_VERSION = "v5"
+APP_VERSION = "v6"
 
 # Page Configuration
 st.set_page_config(
@@ -328,6 +328,48 @@ if uploaded_files:
     with col4:
         st.metric("Client Questions", len(questions), delta=f"{exceptions['total_exception_count']} exceptions total", delta_color="off")
 
+    # "We need to show a formula or where it's getting that number from" --
+    # raised directly in a client meeting after Gross Receipts showed a
+    # figure that turned out to be wrong (see CHANGELOG.md, 2026-09-17): the
+    # dashboard metric alone gave no way to tell whether $X was right without
+    # digging through the audit-detail expander's full line-item list. This
+    # answers "why does it say $X" at a glance, right next to the number
+    # itself, without requiring that dig.
+    with st.expander("How is Gross Receipts calculated?"):
+        st.caption(
+            "**Gross Receipts = every deposit across all uploaded statements, "
+            "except anything categorized Non-P&L** (internal transfers, credit "
+            "card payments, loan proceeds, owner contributions, tax refunds, "
+            "returned deposits, vendor purchase credits, and any transaction a "
+            "client's answer confirmed as personal). Excluded amounts don't "
+            "count here even if they're the largest deposits on a statement."
+        )
+        gross_receipt_txs = [
+            tx for tx in all_transactions
+            if tx.get("is_deposit") and not tx.get("category", "").startswith("Non-P&L:")
+        ]
+        if gross_receipt_txs:
+            by_file = {}
+            for tx in gross_receipt_txs:
+                f = tx.get("source_file", "Unknown")
+                by_file[f] = by_file.get(f, 0.0) + tx["amount"]
+            st.markdown("**By source file:**")
+            st.dataframe(
+                pd.DataFrame(
+                    sorted(by_file.items(), key=lambda kv: -kv[1]),
+                    columns=["Source File", "Amount ($)"],
+                ).assign(**{"Amount ($)": lambda d: d["Amount ($)"].map(lambda v: f"${v:,.2f}")}),
+                use_container_width=True, hide_index=True,
+            )
+            st.markdown(f"**Largest individual deposits (of {len(gross_receipt_txs)} total):**")
+            top_deposits = sorted(gross_receipt_txs, key=lambda tx: -tx["amount"])[:15]
+            st.dataframe(
+                pd.DataFrame(top_deposits)[["date", "payee", "amount", "category", "source_file"]],
+                use_container_width=True, hide_index=True,
+            )
+        else:
+            st.caption("No deposits counted toward Gross Receipts in this run.")
+
     # The 3 tabs that matter every single run. Everything else (line-item
     # search, per-statement reconciliation detail, the residual exception
     # lists that duplicate what Client Questions already makes actionable)
@@ -350,6 +392,30 @@ if uploaded_files:
 
         editors: Dict[str, pd.DataFrame] = {}
 
+        def _apply_answers_and_rerun(answered_questions: List[Dict[str, Any]], empty_message: str):
+            """Shared by the per-category bulk-apply buttons and the main
+            Apply button below -- both just build `answered_questions`
+            differently (a bulk button assigns the same answer to every
+            checked row; the main button reads whatever's in the Answer
+            column of every editor) and hand off to the same apply/rerun
+            logic, so there's only one place that talks to
+            apply_client_answers and session_state."""
+            updated_transactions, new_log_entries = apply_client_answers(all_transactions, answered_questions)
+            applied_count = sum(1 for e in new_log_entries if e["applied"])
+
+            st.session_state.all_transactions = updated_transactions
+            st.session_state.correction_log = st.session_state.correction_log + new_log_entries
+
+            # st.rerun() immediately abandons the rest of this script run, so
+            # a message shown right before it would never actually be visible
+            # -- only rerun when something changed and there's a fresh
+            # dashboard worth seeing. When nothing changed, this message is
+            # what's left on screen instead of flashing and disappearing.
+            if applied_count:
+                st.rerun()
+            else:
+                st.info(empty_message)
+
         def render_question_editor(section_title: str, question_category: str, answer_options: List[str]):
             subset = [q for q in questions if q["category"] == question_category]
             st.markdown(f"**{section_title} ({len(subset)} open)**")
@@ -357,9 +423,14 @@ if uploaded_files:
                 st.caption("Nothing open in this category.")
                 return
             df = pd.DataFrame(subset)[["item_id", "date", "payee", "count", "amount", "question", "client_response", "answer"]]
+            # A leading checkbox column, not part of the underlying question
+            # data -- purely a way to mark several rows at once for the bulk
+            # answer control below (e.g. "these are all personal transfers").
+            df.insert(0, "select", False)
             edited = st.data_editor(
                 df,
                 column_config={
+                    "select": st.column_config.CheckboxColumn("", width="small", help="Check to include in the bulk answer below"),
                     "item_id": st.column_config.TextColumn("ID", disabled=True, width="small"),
                     "date": st.column_config.TextColumn("Date(s)", disabled=True, width="small"),
                     "payee": st.column_config.TextColumn("Payee", disabled=True),
@@ -381,6 +452,42 @@ if uploaded_files:
                 key=f"editor_{question_category}",
             )
             editors[question_category] = edited
+
+            # Bulk answer: apply one answer to every checked row immediately,
+            # rather than requiring the same value be picked by hand in each
+            # row -- raised directly in a client meeting ("if Lindsay sees
+            # these are all personal transfers, she can just bulk select and
+            # change"). Deliberately its own immediate apply (not just a way
+            # to pre-fill the Answer column) so it can reuse the exact same
+            # apply/rerun path as the main button below, instead of trying to
+            # programmatically rewrite the data_editor's own edit state --
+            # Streamlit's data editor state is intentionally read-only.
+            selected_ids = set(edited.loc[edited["select"] == True, "item_id"])  # noqa: E712
+            bulk_col, button_col = st.columns([3, 1])
+            with bulk_col:
+                bulk_value = st.selectbox(
+                    "Bulk answer for checked rows", options=[""] + answer_options,
+                    key=f"bulk_value_{question_category}", label_visibility="collapsed",
+                )
+            with button_col:
+                bulk_clicked = st.button(
+                    f"Apply to {len(selected_ids)} checked" if selected_ids else "Apply to checked rows",
+                    key=f"bulk_apply_{question_category}",
+                    disabled=not (selected_ids and bulk_value),
+                )
+            if bulk_clicked:
+                answered = []
+                for q in subset:
+                    if q["item_id"] not in selected_ids:
+                        continue
+                    q = dict(q)
+                    q["answer"] = bulk_value
+                    q["client_response"] = q.get("client_response", "")
+                    answered.append(q)
+                _apply_answers_and_rerun(
+                    answered,
+                    "No rows were checked -- check a row's box, then pick a bulk answer, before applying.",
+                )
 
         render_question_editor("Expense Verification", "Expense Verification", ANSWER_OPTIONS["Expense Verification"])
         render_question_editor("Asset Purchase", "Asset Purchase", ANSWER_OPTIONS["Asset Purchase"])
@@ -406,21 +513,10 @@ if uploaded_files:
                 q["client_response"] = row.get("client_response", "") or ""
                 answered_questions.append(q)
 
-            updated_transactions, new_log_entries = apply_client_answers(all_transactions, answered_questions)
-            applied_count = sum(1 for e in new_log_entries if e["applied"])
-
-            st.session_state.all_transactions = updated_transactions
-            st.session_state.correction_log = st.session_state.correction_log + new_log_entries
-
-            # st.rerun() immediately abandons the rest of this script run, so
-            # a message shown right before it would never actually be visible
-            # -- only rerun when something changed and there's a fresh
-            # dashboard worth seeing. When nothing was entered, this message
-            # is what's left on screen instead of flashing and disappearing.
-            if applied_count:
-                st.rerun()
-            else:
-                st.info("No new answers to apply — fill in the Answer column above first.")
+            _apply_answers_and_rerun(
+                answered_questions,
+                "No new answers to apply — fill in the Answer column above first.",
+            )
 
         if correction_log:
             st.markdown("---")

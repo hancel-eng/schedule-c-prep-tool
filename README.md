@@ -127,7 +127,10 @@ shows a warning on the login screen and nobody can get in.
 4. **Send the questions to the client**, however you normally do that.
 5. **Enter the client's answers** in the same Answer column and click
    **Apply Client Answers & Recalculate Workpaper** — everything updates
-   immediately, and an answered question won't come back.
+   immediately, and an answered question won't come back. If several rows
+   share the same answer (e.g. "these are all personal transfers"), check
+   their boxes and use the bulk-answer control under the table instead of
+   picking the same answer row by row.
 6. **Download the Excel workpaper.**
 
 Nothing is saved between sessions — uploading a new client's files starts

@@ -87,9 +87,34 @@ class ExceptionAnalyzer:
                         break
 
             # 3. Potential Fixed Assets / Capital Expenditures (> $2,500 threshold or asset keywords)
+            #
+            # A transaction the categorizer already placed in
+            # "Non-P&L: Internal Transfer" (or any other Non-P&L category) is
+            # never eligible here, regardless of amount or asset keywords --
+            # confirmed directly in a client meeting: a same-owner "Online
+            # Transfer To Chk ...2202" kept generating an "is this an asset
+            # purchase?" question purely because it exceeded the de minimis
+            # threshold, even though it was already correctly excluded from
+            # Gross Receipts/Expenses as a transfer. Unlike the personal-
+            # expense check above (which still re-flags an auto-detected
+            # Non-P&L transaction that also matches a personal keyword, as a
+            # safety net against a wrong auto-categorization slipping
+            # through unreviewed -- see
+            # test_auto_detected_non_pnl_transaction_is_not_suppressed), a
+            # transfer or owner draw can never legitimately be a capital
+            # asset no matter how the rest of its categorization turns out,
+            # so this exclusion applies even before client confirmation.
+            # Scoped to the category, not a new "transfer" keyword check
+            # here: that would only special-case this one client's bank
+            # wording, where checking the category generalizes to every
+            # client and every Non-P&L pattern tax_categorizer.py already
+            # knows (including ones added later), with nothing to keep in
+            # sync between two places.
+            is_non_pnl = category.startswith("Non-P&L:")
             is_asset_kw = any(pattern.search(payee_lower) or pattern.search(desc_lower)
                               for _, pattern in _CAPITAL_ASSET_PATTERNS)
-            if (amt >= de_minimis_threshold or is_asset_kw) and not tx.get("is_deposit") and not already_resolved:
+            if ((amt >= de_minimis_threshold or is_asset_kw) and not tx.get("is_deposit")
+                    and not already_resolved and not is_non_pnl):
                 potential_fixed_assets.append({
                     **tx,
                     "reason": f"Amount ${amt:,.2f} exceeds ${de_minimis_threshold:,.0f} threshold or contains capital equipment keywords. Evaluate Section 179 / Depreciation."

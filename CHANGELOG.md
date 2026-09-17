@@ -8,6 +8,39 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for how the current system works,
 and [README.md](README.md#known-limitations--roadmap) for what's still
 open.
 
+## 2026-09-17 — Meeting follow-up: transfer/asset rule, bulk answers, Gross Receipts breakdown
+
+Three items raised directly in a Tax Savers x Spectr sync, fixed the same
+day:
+
+- **An online transfer over the de minimis threshold no longer generates a
+  spurious "is this an asset purchase?" question.** `core/exception_analyzer.py`'s
+  fixed-asset check only looked at amount, never at whether the transaction
+  had already been excluded from the P&L as `Non-P&L: Internal Transfer` (or
+  any other Non-P&L category) -- so a same-owner transfer well above $2,500
+  still got asked about, purely because of its size, after already being
+  correctly excluded from the totals. The fix is scoped to the category, not
+  a new "contains the word transfer" check, so it applies to any client's
+  bank wording rather than special-casing one account's phrasing. Verified
+  against the real 12-month Chase engagement: 17 of this client's own
+  recurring transfers would have generated this exact false question before
+  the fix. The personal-expense check is deliberately untouched -- an
+  auto-detected Non-P&L transaction that also matches a personal keyword is
+  still flagged, as a safety net against a wrong auto-categorization slipping
+  through unreviewed.
+- **Bulk answer.** Each question category's table now has a checkbox column
+  plus a "pick one answer, apply to every checked row" control, instead of
+  requiring the same answer be selected by hand in each row individually
+  (raised directly: "if Lindsay sees these are all personal transfers, she
+  can just bulk select and change").
+- **Gross Receipts is no longer a single unexplained number.** A "How is
+  Gross Receipts calculated?" expander next to the dashboard metric shows
+  the plain-English formula, a breakdown by source file, and the largest
+  individual deposits that make it up -- so a wrong-looking figure can be
+  traced at a glance instead of requiring a dig through the full line-item
+  list (raised directly after the Chase bug above: "we need to show a
+  formula or where it's getting that number from").
+
 ## 2026-09-17 — Chase Gross Receipts bug, and a self-teaching fallback for new banks
 
 - **Fixed: Gross Receipts reported at ~$1.3M on a real client's Chase
