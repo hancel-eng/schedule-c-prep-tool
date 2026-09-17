@@ -19,7 +19,7 @@ from theme import CSS, render_progress_steps
 # Bumped on every meaningful change to this file, so whoever is looking at the
 # app can tell which version is running just by glancing at the sidebar --
 # there is no separate deploy/build pipeline that would otherwise show that.
-APP_VERSION = "v7"
+APP_VERSION = "v8"
 
 # Page Configuration
 st.set_page_config(
@@ -101,16 +101,143 @@ if not check_password():
 st.title("Schedule C Intake & Tax Prep Workpaper Tool")
 st.caption("Turns bank/credit card statements into a client question list and an audit-ready Schedule C workpaper.")
 
-# Sidebar Configuration
+# ----------------------------------------------------------------------------
+# MULTI-CLIENT SESSION STATE -- several clients open in the same browser
+# session at once, switchable without losing work or re-uploading, raised
+# directly by the client: "tengo como 20 clientes yendo a la vez... tener que
+# volver a entrar a este cliente en particular." Deliberately scoped to THIS
+# browser session only (no server-side storage, nothing written to disk) --
+# closing the tab still loses everything, same as before this feature, which
+# keeps the tool's existing "nothing is stored outside your browser tab"
+# guarantee intact. See README.md "Known limitations & roadmap".
+# ----------------------------------------------------------------------------
+def _new_client_state(name: str = "") -> Dict[str, Any]:
+    return {
+        "client_name": name,
+        "tax_year": 2026,
+        "de_minimis_threshold": 2500.0,
+        "materiality_threshold": 0.0,
+        "upload_signature": None,
+        "all_transactions": [],
+        "correction_log": [],
+        "diagnostics_log": [],
+        "coverage_info": None,
+        "reconciliation_summary": None,
+        "reconciliation_results": [],
+        "duplicates_flagged": [],
+        "unique_file_count": 0,
+    }
+
+
+# Each client's own metadata widgets (name, tax year, thresholds) are bound
+# to these fixed keys -- switching the active client copies the field the
+# user was just looking at back into that client's stored dict, then seeds
+# these same keys with the newly-active client's values, before the widgets
+# below re-render with them.
+_CLIENT_WIDGET_KEYS = {
+    "client_name": "client_name_input",
+    "tax_year": "tax_year_input",
+    "de_minimis_threshold": "de_minimis_input",
+    "materiality_threshold": "materiality_input",
+}
+
+
+def _load_client_into_widgets(key: str) -> None:
+    client = st.session_state.clients[key]
+    for field, widget_key in _CLIENT_WIDGET_KEYS.items():
+        st.session_state[widget_key] = client[field]
+
+
+def _save_widgets_into_client(key: str) -> None:
+    if key not in st.session_state.clients:
+        return
+    client = st.session_state.clients[key]
+    for field, widget_key in _CLIENT_WIDGET_KEYS.items():
+        if widget_key in st.session_state:
+            client[field] = st.session_state[widget_key]
+
+
+def _client_label(key: str) -> str:
+    name = st.session_state.clients[key]["client_name"].strip()
+    return name if name else f"Untitled client ({key.replace('client_', '#')})"
+
+
+if "clients" not in st.session_state:
+    st.session_state.clients = {"client_1": _new_client_state("Acme Consulting LLC")}
+    st.session_state.active_client_key = "client_1"
+    st.session_state._last_active_client_key = "client_1"
+    st.session_state.next_client_num = 2
+    st.session_state.client_switcher_label = _client_label("client_1")
+    _load_client_into_widgets("client_1")
+
+
+def _switch_to(new_key: str) -> None:
+    _save_widgets_into_client(st.session_state._last_active_client_key)
+    st.session_state.active_client_key = new_key
+    st.session_state._last_active_client_key = new_key
+    st.session_state.client_switcher_label = _client_label(new_key)
+    _load_client_into_widgets(new_key)
+
+
+def _on_switch_client() -> None:
+    # The selectbox's own key holds the *label* the user just picked (not a
+    # client key) -- plain st.selectbox options/labels, deliberately not
+    # format_func, since a label->key lookup here is simpler to reason about
+    # than keeping a raw key and a display label in sync through it.
+    label_to_key = {_client_label(k): k for k in st.session_state.clients}
+    new_key = label_to_key.get(st.session_state.client_switcher_label, st.session_state.active_client_key)
+    _switch_to(new_key)
+
+
+def _on_new_client() -> None:
+    _save_widgets_into_client(st.session_state._last_active_client_key)
+    n = st.session_state.next_client_num
+    st.session_state.next_client_num += 1
+    new_key = f"client_{n}"
+    st.session_state.clients[new_key] = _new_client_state("")
+    _switch_to(new_key)
+
+
+# A rename typed into "Client Name / Business Name" below only reaches
+# client_state on the next switch (_save_widgets_into_client) -- too late
+# for the label list about to be built here, and the switcher's own current
+# value would fall out of its freshly-rebuilt options entirely the moment a
+# rename is typed, which Streamlit does not allow. So the active client's
+# name (only) is synced from its live widget value every run, before the
+# switcher renders.
+if "client_name_input" in st.session_state:
+    st.session_state.clients[st.session_state.active_client_key]["client_name"] = st.session_state["client_name_input"]
+st.session_state.client_switcher_label = _client_label(st.session_state.active_client_key)
+
+st.sidebar.header("Clients")
+st.sidebar.selectbox(
+    "Active client", options=[_client_label(k) for k in st.session_state.clients],
+    key="client_switcher_label", on_change=_on_switch_client,
+    help="Switch between clients without losing work or re-uploading -- each "
+         "keeps its own files, extraction, and answers for this browser "
+         "session. Nothing here is saved once you close this tab.",
+)
+st.sidebar.button("+ New Client", on_click=_on_new_client, use_container_width=True)
+
+active_client_key = st.session_state.active_client_key
+client_state = st.session_state.clients[active_client_key]
+
+st.sidebar.markdown("---")
+
+# Sidebar Configuration -- keyed to _CLIENT_WIDGET_KEYS above, so switching
+# clients (or adding a new one) reflects immediately in these fields.
 st.sidebar.header("Client & Tax Year Metadata")
-client_name = st.sidebar.text_input("Client Name / Business Name", value="Acme Consulting LLC")
-tax_year = st.sidebar.number_input("Tax Year", value=2026, step=1)
+client_name = st.sidebar.text_input(
+    "Client Name / Business Name", key="client_name_input",
+    placeholder="e.g. Acme Consulting LLC",
+)
+tax_year = st.sidebar.number_input("Tax Year", step=1, key="tax_year_input")
 
 st.sidebar.markdown("---")
 st.sidebar.header("Minimum & Question Rules")
-de_minimis_threshold = st.sidebar.number_input("Fixed Asset Threshold ($)", value=2500.0, step=100.0)
+de_minimis_threshold = st.sidebar.number_input("Fixed Asset Threshold ($)", step=100.0, key="de_minimis_input")
 materiality_threshold = st.sidebar.number_input(
-    "Client Question Materiality Threshold ($)", value=0.0, step=1.0,
+    "Client Question Materiality Threshold ($)", step=1.0, key="materiality_input",
     help="A vendor group whose total is at or below this amount gets no client "
          "question at all -- no one needs to be asked about a single $3 charge. "
          "Applies to the group's total, not each individual charge."
@@ -144,50 +271,82 @@ categorizer = TaxCategorizer()
 st.subheader("1. Upload Client Documents")
 st.caption("If a file with an identical name was already processed, it's flagged as a duplicate and skipped so nothing is counted twice.")
 
+# Scoped to the active client's own key, not shared across clients -- this is
+# what gives each client its own independent set of uploaded files that
+# reappears untouched when switching back to it, and stays empty for a
+# brand-new client rather than showing whatever the previously-active
+# client had uploaded.
 uploaded_files = st.file_uploader(
     "Upload Bank PDFs, Spreadsheets (.xlsx/.csv), or Summary Totals",
     accept_multiple_files=True,
-    type=["pdf", "xlsx", "xls", "csv", "json"]
+    type=["pdf", "xlsx", "xls", "csv", "json"],
+    key=f"uploader_{active_client_key}",
 )
 
-if uploaded_files:
+# A client already processed earlier this session must still show its
+# dashboard after switching away and back, even though its file_uploader
+# widget itself comes back empty -- Streamlit only keeps an uploaded file's
+# bytes alive for a widget that's actually re-instantiated on a given run,
+# and a different client's uploader is what renders while this one is
+# inactive. The already-extracted data lives in client_state regardless, so
+# the gate below is "does this client have files right now OR data from
+# before," never the uploader widget's live truthiness alone.
+has_existing_data = client_state.get("upload_signature") is not None
+
+if uploaded_files or has_existing_data:
     # The app is single-session (see README: "one client = one session"), but
     # a client's answers now need to survive a Streamlit rerun -- every
     # widget interaction reruns this whole script top to bottom. Re-parsing
     # every file on every rerun would silently discard any correction applied
     # a moment earlier, so parsing only happens once per distinct set of
-    # uploaded files; re-running with the same files reuses the (possibly
-    # corrected) working transaction list already in session_state.
-    upload_signature = tuple(sorted((f.name, f.size) for f in uploaded_files))
-    needs_reparse = st.session_state.get("upload_signature") != upload_signature
+    # uploaded files; re-running with the same files (or switching back to a
+    # client with no files currently in its uploader, see above) reuses the
+    # (possibly corrected) working transaction list already stored for this
+    # client.
+    if uploaded_files:
+        upload_signature = tuple(sorted((f.name, f.size) for f in uploaded_files))
+    else:
+        upload_signature = client_state["upload_signature"]
+    already_processed = client_state.get("upload_signature") == upload_signature
 
-    # A visible, step-by-step account of what the app is doing, so a 34-file
-    # upload doesn't look like a frozen page. st.container(key=...) is what
-    # makes theme.py's ".st-key-ts_progress_panel" selector a real parent in
-    # the DOM (unlike a raw markdown <div>, which would render as a sibling
-    # of the widgets below it, not a wrapper around them).
-    with st.container(key="ts_progress_panel"):
-        steps_slot = st.empty()
-        file_progress_slot = st.empty()
+    # Processing no longer starts the instant files are uploaded -- raised
+    # directly: "quiero agregar un botón para iniciar a procesar los
+    # archivos cargados, así el usuario tiene control de cuando iniciar a
+    # procesar." A new/changed file set just sits there, described, until
+    # this button is clicked.
+    if not already_processed:
+        st.info(f"**{len(uploaded_files)} file(s) ready.** Click **Start Processing** below when you're ready to extract and categorize them.")
+        start_clicked = st.button("Start Processing", type="primary", key=f"start_processing_{active_client_key}")
+        if not start_clicked:
+            st.stop()
 
-        def mark_steps(current_key, meta=""):
-            """Renders the 4-step list: everything before current_key is
-            'done', current_key is 'active' (with meta as its status line),
-            everything after is 'pending'. current_key=None marks all done."""
-            order = ["extract", "coverage", "reconcile", "questions"]
-            state, reached = {}, current_key is None
-            for k in order:
-                if k == current_key:
-                    state[k] = "active"
-                elif not reached:
-                    state[k] = "done"
-                else:
-                    state[k] = "pending"
-                if k == current_key:
-                    reached = True
-            render_progress_steps(steps_slot, state, active_meta=meta)
+        # A visible, step-by-step account of what the app is doing, so a
+        # 34-file upload doesn't look like a frozen page. st.container(key=...)
+        # is what makes theme.py's ".st-key-ts_progress_panel" selector a
+        # real parent in the DOM (unlike a raw markdown <div>, which would
+        # render as a sibling of the widgets below it, not a wrapper around
+        # them).
+        with st.container(key="ts_progress_panel"):
+            steps_slot = st.empty()
+            file_progress_slot = st.empty()
 
-        if needs_reparse:
+            def mark_steps(current_key, meta=""):
+                """Renders the 4-step list: everything before current_key is
+                'done', current_key is 'active' (with meta as its status line),
+                everything after is 'pending'. current_key=None marks all done."""
+                order = ["extract", "coverage", "reconcile", "questions"]
+                state, reached = {}, current_key is None
+                for k in order:
+                    if k == current_key:
+                        state[k] = "active"
+                    elif not reached:
+                        state[k] = "done"
+                    else:
+                        state[k] = "pending"
+                    if k == current_key:
+                        reached = True
+                render_progress_steps(steps_slot, state, active_meta=meta)
+
             mark_steps("extract")
             dedup = FilenameDeduplicator()
             unique_files, duplicates_flagged = dedup.process_files(uploaded_files)
@@ -228,62 +387,74 @@ if uploaded_files:
 
             mark_steps("reconcile", coverage_info['status_message'])
             reconciliation_summary = reconciler.summarize(reconciliation_results)
+            mark_steps(None)  # all 4 steps done
 
-            # A genuinely new set of files starts a fresh client -- any prior
-            # corrections belonged to the previous upload and don't carry over.
-            st.session_state.upload_signature = upload_signature
-            st.session_state.all_transactions = parsed_transactions
-            st.session_state.correction_log = []
-            st.session_state.diagnostics_log = diagnostics_log
-            st.session_state.coverage_info = coverage_info
-            st.session_state.reconciliation_summary = reconciliation_summary
-            st.session_state.reconciliation_results = reconciliation_results
-            st.session_state.duplicates_flagged = duplicates_flagged
-            st.session_state.unique_file_count = len(unique_files)
-        else:
-            mark_steps("questions", f"Using the {st.session_state.unique_file_count} file(s) already processed this session")
+            # A genuinely new set of files starts this client fresh -- any
+            # prior corrections belonged to the previous upload and don't
+            # carry over.
+            client_state["upload_signature"] = upload_signature
+            client_state["all_transactions"] = parsed_transactions
+            client_state["correction_log"] = []
+            client_state["diagnostics_log"] = diagnostics_log
+            client_state["coverage_info"] = coverage_info
+            client_state["reconciliation_summary"] = reconciliation_summary
+            client_state["reconciliation_results"] = reconciliation_results
+            client_state["duplicates_flagged"] = duplicates_flagged
+            client_state["unique_file_count"] = len(unique_files)
 
-        # Every rerun (fresh parse or not) reads from session_state, so an
-        # applied client answer is what the rest of the page actually sees.
-        all_transactions: List[Dict[str, Any]] = st.session_state.all_transactions
-        diagnostics_log = st.session_state.diagnostics_log
-        coverage_info = st.session_state.coverage_info
-        reconciliation_summary = st.session_state.reconciliation_summary
-        reconciliation_results = st.session_state.reconciliation_results
-        duplicates_flagged = st.session_state.duplicates_flagged
-        correction_log = st.session_state.correction_log
-        recon_status = reconciliation_summary['status']
+        # Rerun into the branch below on a clean script run, rather than
+        # falling through inline -- the rest of the page always reads from
+        # client_state either way, so there is exactly one code path for
+        # "processed and ready to display," not two.
+        st.rerun()
 
-        mark_steps("questions", reconciliation_summary['status'])
+    # already_processed is True here -- either it already was, or the
+    # processing block above just made it so and rerun into this same branch.
+    all_transactions: List[Dict[str, Any]] = client_state["all_transactions"]
+    diagnostics_log = client_state["diagnostics_log"]
+    coverage_info = client_state["coverage_info"]
+    reconciliation_summary = client_state["reconciliation_summary"]
+    reconciliation_results = client_state["reconciliation_results"]
+    duplicates_flagged = client_state["duplicates_flagged"]
+    correction_log = client_state["correction_log"]
+    recon_status = reconciliation_summary['status']
 
-        # Recomputed fresh every run, straight from the current (possibly
-        # client-corrected) transaction list, so an applied answer's effect
-        # shows up immediately and an answered question never regenerates.
-        analyzer = ExceptionAnalyzer()
-        exceptions = analyzer.analyze_exceptions(
-            all_transactions, de_minimis_threshold=de_minimis_threshold
+    if uploaded_files:
+        st.caption(f"Processed {client_state['unique_file_count']} file(s) for this client.")
+    else:
+        st.caption(
+            f"Showing previously processed data for this client ({client_state['unique_file_count']} file(s)) -- "
+            "the uploader above is empty because you switched away and back, but nothing was lost. "
+            "Upload new/additional files to reprocess."
         )
 
-        q_gen = ClientQuestionGenerator()
-        questions = q_gen.generate_question_list(
-            exceptions, client_name=client_name, materiality_threshold=materiality_threshold
-        )
-        # A 1099 answer is a compliance note, not a transaction
-        # recategorization (see core/answer_applier.py), so nothing about the
-        # underlying transaction changes to naturally drop the question the
-        # way an answered personal-expense or uncategorized one does --
-        # dropped here instead, once logged as applied.
-        resolved_contractors = {
-            entry["payee"] for entry in correction_log
-            if entry.get("question_category") == "Form 1099 Verification" and entry.get("applied")
-        }
-        questions = [
-            q for q in questions
-            if not (q["category"] == "Form 1099 Verification" and q.get("contractor") in resolved_contractors)
-        ]
+    # Recomputed fresh every run, straight from the current (possibly
+    # client-corrected) transaction list, so an applied answer's effect
+    # shows up immediately and an answered question never regenerates.
+    analyzer = ExceptionAnalyzer()
+    exceptions = analyzer.analyze_exceptions(
+        all_transactions, de_minimis_threshold=de_minimis_threshold
+    )
 
-        mark_steps(None)  # all 4 steps done
-        st.caption(f"{len(questions)} question(s) for the client")
+    q_gen = ClientQuestionGenerator()
+    questions = q_gen.generate_question_list(
+        exceptions, client_name=client_name, materiality_threshold=materiality_threshold
+    )
+    # A 1099 answer is a compliance note, not a transaction
+    # recategorization (see core/answer_applier.py), so nothing about the
+    # underlying transaction changes to naturally drop the question the
+    # way an answered personal-expense or uncategorized one does --
+    # dropped here instead, once logged as applied.
+    resolved_contractors = {
+        entry["payee"] for entry in correction_log
+        if entry.get("question_category") == "Form 1099 Verification" and entry.get("applied")
+    }
+    questions = [
+        q for q in questions
+        if not (q["category"] == "Form 1099 Verification" and q.get("contractor") in resolved_contractors)
+    ]
+
+    st.caption(f"{len(questions)} question(s) for the client")
 
     if duplicates_flagged:
         for dup in duplicates_flagged:
@@ -459,8 +630,8 @@ if uploaded_files:
             updated_transactions, new_log_entries = apply_client_answers(all_transactions, answered_questions)
             applied_count = sum(1 for e in new_log_entries if e["applied"])
 
-            st.session_state.all_transactions = updated_transactions
-            st.session_state.correction_log = st.session_state.correction_log + new_log_entries
+            client_state["all_transactions"] = updated_transactions
+            client_state["correction_log"] = client_state["correction_log"] + new_log_entries
 
             # st.rerun() immediately abandons the rest of this script run, so
             # a message shown right before it would never actually be visible

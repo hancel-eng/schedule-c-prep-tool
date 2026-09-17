@@ -113,29 +113,56 @@ shows a warning on the login screen and nobody can get in.
 
 ## How to use it
 
-1. **Sidebar** — enter the client's name, the tax year, the fixed-asset
+1. **Sidebar → Clients** — pick which client you're working on (or click
+   **+ New Client**). Several clients can be open in the same session at
+   once; switching between them keeps each one's own files, answers, and
+   progress — see [Working with multiple clients](#working-with-multiple-clients) below.
+2. **Fill in that client's metadata** — name, the tax year, the fixed-asset
    ("de minimis") dollar threshold, and the client-question materiality
    threshold (a vendor whose total spend doesn't clear this amount gets no
    question at all — leave it at $0 to ask about everything).
-2. **Upload** — the client's bank/credit-card statement PDFs and/or
+3. **Upload** — the client's bank/credit-card statement PDFs and/or
    spreadsheets for the full tax year. Don't upload a P&L summary
    *alongside* the statements it summarizes — that counts the same money
    twice. Use one or the other.
-3. **Review "Client Inquiry Questions"** (the first tab) — each open
+4. **Click "Start Processing"** when you're ready — uploading files no
+   longer starts extraction automatically; nothing happens until you click
+   this, so you're never waiting on a run you didn't mean to start yet.
+5. **Review "Client Inquiry Questions"** (the first tab) — each open
    question has an **Answer** dropdown with a fixed set of choices, never a
    free-text box, so the tool is never guessing what you meant.
-4. **Send the questions to the client**, however you normally do that.
-5. **Enter the client's answers** in the same Answer column and click
+6. **Send the questions to the client**, however you normally do that.
+7. **Enter the client's answers** in the same Answer column and click
    **Apply Client Answers & Recalculate Workpaper** — everything updates
    immediately, and an answered question won't come back. If several rows
    share the same answer (e.g. "these are all personal transfers"), check
    their boxes and use the bulk-answer control under the table instead of
    picking the same answer row by row.
-6. **Download the Excel workpaper.**
+8. **Download the Excel workpaper.**
 
-Nothing is saved between sessions — uploading a new client's files starts
-completely fresh. Nothing is written to a database; everything lives only
-in your browser tab while you're working.
+Nothing is saved once you close the browser tab — everything lives only in
+your session while you're working, never written to a database or disk.
+
+## Working with multiple clients
+
+**Sidebar → Clients** lets you keep several clients open in the same
+session and switch between them without losing work or re-uploading
+anything — click **+ New Client** to start one, or pick an existing one
+from the dropdown. Each client keeps its own uploaded files, extracted
+transactions, applied answers, and metadata independently; switching away
+and back shows exactly what you left, even mid-question.
+
+One visual quirk worth knowing: switching clients can leave the file
+**uploader** itself looking empty when you switch back to a client you'd
+already processed — that's expected, not a data loss. The already-extracted
+results are what's actually shown (look for the "Showing previously
+processed data for this client" note), and uploading is only needed again
+if you want to add or replace files for that client.
+
+This is session-only, not saved storage: closing the browser tab still
+loses every client's work, the same as before this feature existed —
+nothing here is written to a database or disk. If you need to keep a
+client's results past closing the tab, download its Excel workpaper first.
 
 ---
 
@@ -164,8 +191,10 @@ in your browser tab while you're working.
   printed — never to decide a tax category or a dollar total, and never
   for a bank already recognized. See
   [Unrecognized bank formats](#unrecognized-bank-formats).
-- **One client, one session.** Nothing carries over between clients, and
-  nothing is stored outside your browser tab while you're working.
+- **Several clients, one browser session, nothing stored outside it.**
+  Switching clients never mixes their data together, and nothing here is
+  ever written to a database or disk — closing the tab loses everything,
+  same as always. See [Working with multiple clients](#working-with-multiple-clients).
 - **Duplicate files are caught by filename, not by comparing individual
   transactions** — comparing transactions risked accidentally throwing away
   a real transaction that happened to look like a duplicate.

@@ -231,21 +231,88 @@ behind a signature of the uploaded files (name + size):
 
 ```python
 upload_signature = tuple(sorted((f.name, f.size) for f in uploaded_files))
-needs_reparse = st.session_state.get("upload_signature") != upload_signature
+already_processed = client_state.get("upload_signature") == upload_signature
 ```
 
-A genuinely new set of files re-parses from scratch and resets
-`st.session_state.correction_log` (a new client starts with a clean slate).
-Otherwise, `st.session_state.all_transactions` — the working, possibly
-client-corrected transaction list — is reused. **Exceptions and questions
-are recomputed fresh on every single run**, regardless of `needs_reparse`,
-straight from the current transaction list: this is what makes an applied
-answer's effect show up immediately and keeps an answered question from
-reappearing.
+A genuinely new set of files needs a **Start Processing** click (below)
+before it re-parses from scratch and resets `client_state["correction_log"]`
+(a new file set starts with a clean slate). Otherwise,
+`client_state["all_transactions"]` — the working, possibly client-corrected
+transaction list — is reused. **Exceptions and questions are recomputed
+fresh on every single run** once processed, regardless of whether this run
+re-parsed, straight from the current transaction list: this is what makes
+an applied answer's effect show up immediately and keeps an answered
+question from reappearing.
 
-This is consistent with "one client = one session" (see
-[README.md](README.md#key-design-decisions)): state lives only as long as
-the browser tab does, in memory, never written to disk or a database.
+### Explicit "Start Processing," not parse-on-upload
+
+Uploading files no longer triggers extraction immediately — raised
+directly: "quiero agregar un botón para iniciar a procesar los archivos
+cargados, así el usuario tiene control de cuando iniciar a procesar." A
+new/changed file set is described ("N file(s) ready") and waits for a
+**Start Processing** button click; `st.stop()` halts the rest of the script
+for that run if it hasn't been clicked yet, so nothing below (dashboard,
+tabs, export) tries to render against data that doesn't exist yet. The
+processing block ends with `st.rerun()` rather than falling through inline
+to the dashboard code — deliberately, so there is exactly one code path
+that reads and displays `client_state` ("already processed"), not two
+slightly-different ones (`just finished processing` vs. `was already done`).
+
+### Multiple clients in one session
+
+Several clients can be open in the same browser session at once, switchable
+without losing work or re-uploading — raised directly by the client
+("tengo como 20 clientes yendo a la vez... tener que volver a entrar a este
+cliente en particular"). `st.session_state.clients` is a dict keyed by an
+internal id (`"client_1"`, `"client_2"`, ...), each value holding that
+client's own metadata (name, tax year, thresholds) and processing results
+(`all_transactions`, `correction_log`, reconciliation state, etc.) — the
+same fields that used to live flat on `st.session_state` before this
+feature, now namespaced per client instead. `client_state =
+st.session_state.clients[active_client_key]` at the top of `app.py` is what
+every section below reads from and writes to.
+
+Two things make switching actually work, both non-obvious:
+
+- **The sidebar metadata widgets (name, tax year, thresholds) are bound to
+  fixed keys** (`client_name_input`, `tax_year_input`, ...), not to the
+  active client directly. Switching clients means: copy whatever's
+  currently in those keys into the client being switched *away from*
+  (`_save_widgets_into_client`), then seed those same keys with the values
+  of the client being switched *to* (`_load_client_into_widgets`) — done in
+  that order, before the widgets re-render, or the previous client's edits
+  would be silently lost. `_switch_to()` is the one place both happen
+  together; every entry point (the switcher's `on_change`, "+ New Client")
+  goes through it. The switcher selectbox intentionally does **not** use
+  `format_func` to show a display label for a raw client-id option (a real
+  bug surfaced doing it that way — a stale index lookup inside
+  `streamlit.testing.v1`'s own `Selectbox.index` property, not reproducible
+  outside tests but not worth the risk in production either) — it uses the
+  *labels themselves* as the options, with a label→key lookup on change
+  instead.
+- **`st.file_uploader` is keyed per client** (`f"uploader_{active_client_key}"`),
+  which is what gives each client its own independent set of uploaded
+  files. But Streamlit only keeps an uploaded file's bytes alive for a
+  widget that's actually re-instantiated on a given run — switch to a
+  different client for even one rerun, and the previous client's uploader
+  widget isn't part of that run's script execution, and its file bytes can
+  be dropped. Confirmed switching away and back: the uploader comes back
+  empty. This is harmless *only* because the dashboard's "is there
+  something to show" gate is `uploaded_files or has_existing_data`, never
+  `uploaded_files` alone — `has_existing_data` is
+  `client_state.get("upload_signature") is not None`, independent of
+  whatever the live uploader widget currently holds. The already-extracted
+  transactions, reconciliation results, and questions all live in
+  `client_state`, not in the uploader, so losing the raw uploaded bytes
+  after processing costs nothing.
+
+This is still consistent with "nothing is stored outside your browser tab"
+(see [README.md](README.md#key-design-decisions)): `st.session_state.clients`
+lives only as long as the browser tab does, in memory, never written to
+disk or a database. Closing the tab loses every client's work, same as
+before this feature — the guarantee this trades away is narrower: not
+"nothing persists across a page refresh," but "nothing persists across
+closing the tab."
 
 ## Visual theme
 

@@ -8,6 +8,31 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for how the current system works,
 and [README.md](README.md#known-limitations--roadmap) for what's still
 open.
 
+## 2026-09-17 — Multiple clients per session, and explicit "Start Processing"
+
+- **Several clients can now be open in the same browser session at once**,
+  switchable from the sidebar without losing work or re-uploading -- raised
+  directly by the client ("tengo como 20 clientes yendo a la vez... tener
+  que volver a entrar a este cliente en particular"). Everything that used
+  to live flat on `st.session_state` (uploaded files, extracted
+  transactions, applied answers, metadata) now lives in a
+  `st.session_state.clients[key]` dict per client instead. Deliberately
+  scoped to the browser session only, no server-side storage -- closing the
+  tab still loses everything, keeping the tool's "nothing is stored outside
+  your browser tab" guarantee intact. One real bug found and fixed along
+  the way: Streamlit only keeps an uploaded file's bytes alive for a widget
+  actually re-instantiated on a given run, so a client's own file uploader
+  comes back empty after switching away and back -- the dashboard's
+  "there's something to show" check now looks at whether that client has
+  *previously processed data*, not at the uploader's current state alone,
+  so nothing is actually lost, only the raw file bytes (already fully
+  extracted by then). See
+  [ARCHITECTURE.md](ARCHITECTURE.md#the-streamlit-session-pattern).
+- **Uploading files no longer starts processing automatically.** A new
+  "Start Processing" button gives the preparer explicit control over when
+  extraction and categorization actually run, instead of it firing the
+  instant a file is dropped in.
+
 ## 2026-09-17 — Every dashboard figure now shows how it was calculated
 
 Widened the Gross Receipts breakdown (added the same day, below) into a
