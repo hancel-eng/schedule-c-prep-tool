@@ -525,12 +525,39 @@ class BankPDFParser:
                         # wins protects against a coincidental later match.
                         self._capture_balances(clean_line, data)
 
-                        if "deposits & credits" in l_lower or "deposits and credits" in l_lower:
+                        # A subtotal/rollup line ("Total ATM Withdrawals &
+                        # Debits $0.00", "Total Card Deposits & Credits
+                        # $0.00") can contain the exact same wording a real
+                        # section header uses. Chase's "ATM & Debit Card
+                        # Summary" mini-table repeats both of those phrases
+                        # twice per statement -- each one flipped
+                        # current_section again, and the state it was left in
+                        # after the last one silently carried through the
+                        # Electronic Withdrawals section (correctly classified
+                        # there only because of keyword matches) all the way
+                        # to the Daily Ending Balance table, which has no
+                        # keywords of its own and so inherited whatever
+                        # current_section happened to be -- confirmed on a
+                        # real statement: it landed on "DEPOSIT" and every
+                        # daily balance on the table became a phantom deposit,
+                        # inflating Gross Receipts by over $1M across a year
+                        # of statements. A real section header is never itself
+                        # a "Total ..." rollup line, so those are never
+                        # eligible to change the section at all.
+                        is_rollup_line = l_lower.strip().startswith("total")
+
+                        if is_rollup_line:
+                            pass
+                        elif ("deposits & credits" in l_lower or "deposits and credits" in l_lower or
+                              l_lower.strip().startswith("deposits and additions")):
                             current_section = "DEPOSIT"
                             continue
                         elif (l_lower.strip().startswith("withdrawals") or
                               "withdrawals & debits" in l_lower or "withdrawals and debits" in l_lower or
-                              "electronic debits" in l_lower):
+                              "electronic debits" in l_lower or
+                              l_lower.strip().startswith("atm & debit card withdrawals") or
+                              l_lower.strip().startswith("atm and debit card withdrawals") or
+                              l_lower.strip().startswith("electronic withdrawals")):
                             # A real Regions statement prints this header as the
                             # bare word "WITHDRAWALS" (and "WITHDRAWALS
                             # (CONTINUED)" on later pages) -- not "WITHDRAWALS &
@@ -542,18 +569,29 @@ class BankPDFParser:
                             # Purchase in the section was booked as income.
                             # Confirmed by re-running against a real statement:
                             # every "Card Purchase ..." line showed is_deposit
-                            # True until this was widened.
+                            # True until this was widened. Chase splits its
+                            # withdrawals across two headers of its own
+                            # ("ATM & Debit Card Withdrawals", "Electronic
+                            # Withdrawals") instead of one bare "WITHDRAWALS".
                             current_section = "EXPENSE"
                             continue
-                        elif l_lower.strip() == "checks" or "checks paid" in l_lower:
+                        elif l_lower.strip() == "checks" or l_lower.strip().startswith("checks paid"):
                             # A cleared-checks listing. Regions prints these as
                             # "Date Check No. Amount" pairs, TWO pairs per line
                             # (a left column and a right column) -- a different
                             # shape from every other section, so it gets its own
-                            # state and its own line format below.
+                            # state and its own line format below. Narrowed to
+                            # a line *starting with* "checks paid" (the header)
+                            # rather than merely containing that phrase
+                            # anywhere: Chase's own "CHECKING SUMMARY" recap
+                            # prints a "Checks Paid 2 -2,700.00" rollup line
+                            # near the top of the statement, well before the
+                            # real section, which used to flip current_section
+                            # to CHECK_DETAIL prematurely.
                             current_section = "CHECK_DETAIL"
                             continue
-                        elif "daily balance summary" in l_lower:
+                        elif ("daily balance summary" in l_lower or
+                              l_lower.strip().startswith("daily ending balance")):
                             # A repeating "date balance date balance date
                             # balance" table -- every field on these lines is a
                             # date followed by a dollar-looking number, which is
@@ -565,6 +603,8 @@ class BankPDFParser:
                             # line that was actually three balance figures).
                             # Skipped outright until a real section header
                             # (checked above, ahead of this branch) fires again.
+                            # Chase labels this same table "DAILY ENDING
+                            # BALANCE" rather than "DAILY BALANCE SUMMARY".
                             current_section = "SKIP"
                             continue
 

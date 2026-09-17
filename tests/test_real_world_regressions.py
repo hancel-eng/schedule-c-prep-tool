@@ -243,3 +243,68 @@ def test_fees_and_checks_summary_lines_are_captured_though_not_flagged_as_summar
     parser._capture_balances("Checks $5,130.19 -", data)
     assert data.total_fees == pytest.approx(8.00)
     assert data.total_checks == pytest.approx(5130.19)
+
+
+# --- A "Total ..." rollup line must never flip the section state -----------
+
+def test_rollup_lines_echoing_header_wording_do_not_flip_section_state():
+    """A real statement (Chase) prints an "ATM & Debit Card Summary" mini-table
+    that repeats "Total ATM Withdrawals & Debits $0.00" and "Total Card
+    Deposits & Credits $0.00" -- both containing the exact substrings
+    ("withdrawals & debits", "deposits & credits") the section-header check
+    looks for. Before this was guarded, those two rollup lines flipped
+    current_section back and forth and left it stranded on "DEPOSIT" for
+    everything that followed, including a same-shaped "date amount date
+    amount" balance table with no keywords of its own to correct it --
+    turning every daily balance on that table into a phantom deposit and
+    inflating a full year of statements by over $1M on a real engagement."""
+    pdf = _pdf_from_lines([
+        "ATM & DEBIT CARD SUMMARY",
+        "Total ATM Withdrawals & Debits $0.00",
+        "Total Card Purchases $455.99",
+        "Total Card Deposits & Credits $0.00",
+        "DAILY ENDING BALANCE",
+        "DATE AMOUNT DATE AMOUNT DATE AMOUNT",
+        "02/02 $45,196.47 02/13 42,997.47 02/21 33,480.67",
+    ])
+    parser = BankPDFParser()
+    data = parser._parse_general_or_scanned_pdf(pdf, "Bank Statement 01 23 2025.pdf", 2025, 1)
+    assert data.transactions == []
+
+
+def test_chase_style_section_headers_are_recognized():
+    """Chase splits deposits/withdrawals across its own header vocabulary
+    ("Deposits and Additions", "ATM & Debit Card Withdrawals", "Electronic
+    Withdrawals") instead of the bare "WITHDRAWALS" / "DEPOSITS & CREDITS"
+    Regions prints -- none of it matched before, so every line's direction
+    depended entirely on keyword guessing rather than the section it was
+    actually printed under."""
+    pdf = _pdf_from_lines([
+        "DEPOSITS AND ADDITIONS",
+        "01/30 Deposit 1188271441 $6,293.94",
+        "ATM & DEBIT CARD WITHDRAWALS",
+        "01/03 Card Purchase 01/01 Inside Real Estate 800-656-1646 UT $250.00",
+        "ELECTRONIC WITHDRAWALS",
+        "01/31 01/31 Online Transfer To Chk ...2202 Transaction#: 16425446690 1,000.00",
+    ])
+    parser = BankPDFParser()
+    data = parser._parse_general_or_scanned_pdf(pdf, "Bank Statement 01 23 2025.pdf", 2025, 1)
+    by_payee = {tx.payee: tx for tx in data.transactions}
+    assert by_payee["Deposit 1188271441"].is_deposit is True
+    assert any(not tx.is_deposit for p, tx in by_payee.items() if "Card Purchase" in p)
+
+
+def test_checks_paid_recap_line_does_not_prematurely_start_check_detail_mode():
+    """Chase's own "CHECKING SUMMARY" recap near the top of the statement
+    prints a "Checks Paid 2 -2,700.00" rollup line, well before the real
+    Checks Paid section -- this used to switch current_section to
+    CHECK_DETAIL immediately, before any transaction had even been reached."""
+    pdf = _pdf_from_lines([
+        "Checks Paid 2 -2,700.00",
+        "DEPOSITS AND ADDITIONS",
+        "01/30 Deposit 1188271441 $6,293.94",
+    ])
+    parser = BankPDFParser()
+    data = parser._parse_general_or_scanned_pdf(pdf, "Bank Statement 01 23 2025.pdf", 2025, 1)
+    by_payee = {tx.payee: tx for tx in data.transactions}
+    assert by_payee["Deposit 1188271441"].is_deposit is True
