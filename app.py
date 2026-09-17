@@ -19,7 +19,7 @@ from theme import CSS, render_progress_steps
 # Bumped on every meaningful change to this file, so whoever is looking at the
 # app can tell which version is running just by glancing at the sidebar --
 # there is no separate deploy/build pipeline that would otherwise show that.
-APP_VERSION = "v6"
+APP_VERSION = "v7"
 
 # Page Configuration
 st.set_page_config(
@@ -320,21 +320,79 @@ if uploaded_files:
 
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.metric("Gross Receipts (Line 1)", f"${gross_receipts:,.2f}")
+        st.metric("Gross Receipts (Line 1)", f"${gross_receipts:,.2f}", help="See \"How is Gross Receipts calculated?\" below.")
     with col2:
-        st.metric("Total Expenses (Line 28)", f"${total_expenses:,.2f}")
+        st.metric("Total Expenses (Line 28)", f"${total_expenses:,.2f}", help="See \"How is Total Expenses calculated?\" below.")
     with col3:
-        st.metric("Net Profit / (Loss) (Line 31)", f"${net_profit:,.2f}")
+        st.metric("Net Profit / (Loss) (Line 31)", f"${net_profit:,.2f}", help="See \"How is Net Profit / (Loss) calculated?\" below.")
     with col4:
-        st.metric("Client Questions", len(questions), delta=f"{exceptions['total_exception_count']} exceptions total", delta_color="off")
+        st.metric(
+            "Client Questions", len(questions), delta=f"{exceptions['total_exception_count']} exceptions total", delta_color="off",
+            help=(
+                "Client Questions = open items in the 4 answerable categories below "
+                "(Expense Verification, Asset Purchase, Uncategorized Expense, Form "
+                "1099 Verification), minus anything already answered. Exceptions "
+                "total is broader -- it also counts Non-P&L exclusions and large-"
+                "transaction flags, which are informational and never turn into a "
+                "client question on their own."
+            ),
+        )
 
     # "We need to show a formula or where it's getting that number from" --
     # raised directly in a client meeting after Gross Receipts showed a
-    # figure that turned out to be wrong (see CHANGELOG.md, 2026-09-17): the
-    # dashboard metric alone gave no way to tell whether $X was right without
-    # digging through the audit-detail expander's full line-item list. This
-    # answers "why does it say $X" at a glance, right next to the number
-    # itself, without requiring that dig.
+    # figure that turned out to be wrong (see CHANGELOG.md, 2026-09-17), then
+    # widened to every dashboard figure: "I want all calculations to show how
+    # they were calculated, so anyone reading can understand what was done,
+    # without having to invent anything, and without the AI or anyone
+    # hallucinating." Every breakdown below is the literal transaction data
+    # already computed above (grouped/sorted, never re-described or
+    # summarized in prose by anything, AI included) -- the same numbers, just
+    # shown broken apart instead of only as one final total, so nothing here
+    # can say anything the underlying transactions don't already say.
+    def render_transaction_breakdown(txs: List[Dict[str, Any]], noun: str, amount_key: str = "amount"):
+        """Shared by every "how was this calculated" expander below: groups
+        the exact same transactions that were summed into the metric above,
+        by source file and by category, plus the largest individual amounts
+        -- so a number can always be traced back to real rows, not a
+        separately-written explanation of them."""
+        if not txs:
+            st.caption(f"No {noun} in this run.")
+            return
+        by_file: Dict[str, float] = {}
+        by_category: Dict[str, float] = {}
+        for tx in txs:
+            by_file[tx.get("source_file", "Unknown")] = by_file.get(tx.get("source_file", "Unknown"), 0.0) + abs(tx[amount_key])
+            by_category[tx.get("category", "Uncategorized")] = by_category.get(tx.get("category", "Uncategorized"), 0.0) + abs(tx[amount_key])
+
+        def _table(items):
+            return pd.DataFrame(
+                sorted(items, key=lambda kv: -kv[1]), columns=["", "Amount ($)"]
+            ).assign(**{"Amount ($)": lambda d: d["Amount ($)"].map(lambda v: f"${v:,.2f}")})
+
+        col_a, col_b = st.columns(2)
+        with col_a:
+            st.markdown("**By source file:**")
+            st.dataframe(_table(by_file.items()), use_container_width=True, hide_index=True)
+        with col_b:
+            st.markdown("**By category:**")
+            st.dataframe(_table(by_category.items()), use_container_width=True, hide_index=True)
+
+        st.markdown(f"**Largest individual {noun} (of {len(txs)} total):**")
+        top = sorted(txs, key=lambda tx: -abs(tx[amount_key]))[:15]
+        st.dataframe(
+            pd.DataFrame(top)[["date", "payee", "amount", "category", "source_file"]],
+            use_container_width=True, hide_index=True,
+        )
+
+    gross_receipt_txs = [
+        tx for tx in all_transactions
+        if tx.get("is_deposit") and not tx.get("category", "").startswith("Non-P&L:")
+    ]
+    expense_txs = [
+        tx for tx in all_transactions
+        if not tx.get("is_deposit") and not tx.get("category", "").startswith("Non-P&L:")
+    ]
+
     with st.expander("How is Gross Receipts calculated?"):
         st.caption(
             "**Gross Receipts = every deposit across all uploaded statements, "
@@ -344,31 +402,29 @@ if uploaded_files:
             "client's answer confirmed as personal). Excluded amounts don't "
             "count here even if they're the largest deposits on a statement."
         )
-        gross_receipt_txs = [
-            tx for tx in all_transactions
-            if tx.get("is_deposit") and not tx.get("category", "").startswith("Non-P&L:")
-        ]
-        if gross_receipt_txs:
-            by_file = {}
-            for tx in gross_receipt_txs:
-                f = tx.get("source_file", "Unknown")
-                by_file[f] = by_file.get(f, 0.0) + tx["amount"]
-            st.markdown("**By source file:**")
-            st.dataframe(
-                pd.DataFrame(
-                    sorted(by_file.items(), key=lambda kv: -kv[1]),
-                    columns=["Source File", "Amount ($)"],
-                ).assign(**{"Amount ($)": lambda d: d["Amount ($)"].map(lambda v: f"${v:,.2f}")}),
-                use_container_width=True, hide_index=True,
-            )
-            st.markdown(f"**Largest individual deposits (of {len(gross_receipt_txs)} total):**")
-            top_deposits = sorted(gross_receipt_txs, key=lambda tx: -tx["amount"])[:15]
-            st.dataframe(
-                pd.DataFrame(top_deposits)[["date", "payee", "amount", "category", "source_file"]],
-                use_container_width=True, hide_index=True,
-            )
-        else:
-            st.caption("No deposits counted toward Gross Receipts in this run.")
+        render_transaction_breakdown(gross_receipt_txs, "deposits")
+
+    with st.expander("How is Total Expenses calculated?"):
+        st.caption(
+            "**Total Expenses = every non-deposit transaction across all "
+            "uploaded statements, except anything categorized Non-P&L** "
+            "(same exclusions as Gross Receipts, above). One adjustment is "
+            "applied after that: a **Line 24b (Meals)** transaction is "
+            "counted at **50% of its actual amount**, per the IRS 50% meals "
+            "deduction limit -- the amounts below are the actual transaction "
+            "amounts before that 50% cut, so they won't match Total Expenses "
+            "exactly for a client with meal expenses; the Schedule C Summary "
+            "tab shows the post-50%-cut figure per line."
+        )
+        render_transaction_breakdown(expense_txs, "expenses")
+
+    with st.expander("How is Net Profit / (Loss) calculated?"):
+        st.caption(
+            f"**Net Profit = Gross Receipts − Total Expenses.** "
+            f"${gross_receipts:,.2f} − ${total_expenses:,.2f} = **${net_profit:,.2f}**. "
+            "No other adjustment is applied -- see the two expanders above for "
+            "what makes up each of those two figures."
+        )
 
     # The 3 tabs that matter every single run. Everything else (line-item
     # search, per-statement reconciliation detail, the residual exception
@@ -529,6 +585,13 @@ if uploaded_files:
 
     with tab_summary:
         st.markdown("#### Schedule C Line Item Breakdown")
+        st.caption(
+            "Each line's amount is the sum of every transaction the categorizer "
+            "placed in that IRS line, with Non-P&L exclusions already removed. "
+            "Pick a line below to see exactly which transactions make it up --"
+            " nothing here is summarized or described independently of the "
+            "actual transaction list."
+        )
         summary_rows = []
         summary_rows.append({"Line": "Line 1", "IRS Category": "Gross Receipts / Sales", "Amount ($)": f"${gross_receipts:,.2f}", "Status": "Cleaned of Transfers"})
 
@@ -544,8 +607,38 @@ if uploaded_files:
 
         st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
 
+        line_options = ["Line 1: Gross Receipts / Sales"] + sorted(expense_totals.keys())
+        selected_line = st.selectbox("Inspect a line item's transactions", options=line_options, key="summary_line_inspect")
+        if selected_line == line_options[0]:
+            inspect_txs, inspect_note = gross_receipt_txs, None
+        else:
+            inspect_txs = [tx for tx in expense_txs if tx.get("category") == selected_line]
+            inspect_note = (
+                f"These {len(inspect_txs)} transaction(s) sum to "
+                f"${sum(abs(t['amount']) for t in inspect_txs):,.2f} in full -- the Line "
+                f"24b figure above is 50% of that, per the IRS meals deduction limit."
+                if "24b" in selected_line else None
+            )
+        if inspect_note:
+            st.caption(inspect_note)
+        if inspect_txs:
+            st.dataframe(
+                pd.DataFrame(inspect_txs)[["date", "payee", "amount", "source_file"]],
+                use_container_width=True, hide_index=True,
+            )
+        else:
+            st.caption("No transactions in this line.")
+
     with tab_nonpnl:
         st.markdown("#### Excluded Non-P&L Transfers & Credit Card Payments")
+        st.caption(
+            "Every transaction here was removed from Gross Receipts/Total Expenses "
+            "before those totals were computed above -- its **Category** column is "
+            "the reason it doesn't count: an internal transfer between the client's "
+            "own accounts, a credit card payment, loan proceeds/repayment, an owner "
+            "draw/contribution, a tax refund, a returned deposit, a vendor purchase "
+            "credit, or a transaction a client's answer confirmed as personal."
+        )
         if exceptions['non_pnl_transfers']:
             st.dataframe(pd.DataFrame(exceptions['non_pnl_transfers'])[['date', 'payee', 'amount', 'category', 'source_file']], use_container_width=True, height=450)
         else:

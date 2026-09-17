@@ -8,6 +8,30 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for how the current system works,
 and [README.md](README.md#known-limitations--roadmap) for what's still
 open.
 
+## 2026-09-17 — Every dashboard figure now shows how it was calculated
+
+Widened the Gross Receipts breakdown (added the same day, below) into a
+general rule: "I want all calculations to show how they were calculated, so
+anyone reading can understand what was done, without having to invent
+anything, and without the AI or anyone hallucinating."
+
+- **Total Expenses** and **Net Profit / (Loss)** each get the same "How is
+  this calculated?" expander Gross Receipts already had: Total Expenses
+  breaks down by source file, by category, and largest individual expenses
+  (with an explicit note that Line 24b/meals transactions are shown at their
+  full amount there, not the 50%-limited figure the dashboard metric uses);
+  Net Profit shows the plain formula with the two actual numbers plugged in.
+- **Schedule C Summary tab** gained a line-item inspector: pick any line
+  (including Line 1) and see the exact transactions that sum to it, with the
+  same 50%-meals note where relevant.
+- **Non-P&L Transfers tab** gained a caption naming what each possible
+  category means, next to the list that already shows every excluded
+  transaction's own category as its reason.
+- Every breakdown is the literal already-computed transaction data, grouped
+  and sorted -- never a separately-written description of it, from the AI
+  fallback (see below) or otherwise, so there's nothing in any of these
+  explanations that isn't traceable to an actual transaction.
+
 ## 2026-09-17 — Meeting follow-up: transfer/asset rule, bulk answers, Gross Receipts breakdown
 
 Three items raised directly in a Tax Savers x Spectr sync, fixed the same
