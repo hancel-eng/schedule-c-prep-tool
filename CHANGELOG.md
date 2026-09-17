@@ -8,6 +8,43 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for how the current system works,
 and [README.md](README.md#known-limitations--roadmap) for what's still
 open.
 
+## 2026-09-17 — Chase Gross Receipts bug, and a self-teaching fallback for new banks
+
+- **Fixed: Gross Receipts reported at ~$1.3M on a real client's Chase
+  statements where the true figure was $142,223.72.** Root cause: a "Total
+  ATM Withdrawals & Debits $0.00" / "Total Card Deposits & Credits $0.00"
+  rollup line, printed twice per statement in Chase's own summary
+  mini-table, contains the exact same wording the section-header detector
+  looked for -- it kept flipping the parser's internal section state, which
+  landed on "deposit" right before the statement's daily-balance table (no
+  keywords of its own to correct a wrong section) and turned every daily
+  balance into a phantom deposit. Also recognized Chase's own header
+  vocabulary directly ("Deposits and Additions," "ATM & Debit Card
+  Withdrawals," "Electronic Withdrawals," "Daily Ending Balance") instead of
+  relying on keyword-guessing alone. Verified against the real 12-month
+  engagement: extraction now matches the bank's own per-statement "Deposits
+  and Additions" figures to the cent for most months.
+- **New: an unrecognized bank's statement format is no longer a manual
+  fix.** Previously, a new bank meant someone had to notice a wrong number,
+  diagnose the statement's actual wording, and patch `pdf_parser.py` by
+  hand -- exactly what the Chase bug above required. Now `parse_pdf()`
+  escalates automatically: try the rules engine -> try every bank format
+  already learned (`bank_profiles/*.json`, free) -> ask Claude to transcribe
+  the one unrecognized statement (`core/llm_extractor.py`, a few cents) ->
+  if that reconciles against the statement's own declared totals, ask
+  Claude to name that bank's header vocabulary and verify the *ordinary
+  rules engine* reproduces the same numbers with it before saving it as a
+  reusable profile (`core/bank_learner.py`). A bank costs a few cents once
+  (maybe twice), then nothing, forever, automatically. See
+  [ARCHITECTURE.md](ARCHITECTURE.md#unrecognized-bank-formats-the-self-teaching-fallback)
+  for the full design and
+  [README.md](README.md#unrecognized-bank-formats) for how to turn it on
+  (`ANTHROPIC_API_KEY` in Streamlit secrets; off by default with no key
+  configured, and a sidebar toggle either way). Categorization stays
+  100% rule-based regardless of which path extracted a transaction -- the
+  model is only ever used to transcribe what's printed, never to decide a
+  tax category or a dollar total.
+
 ## 2026-09-14 — Password gate and remaining Spanish text
 
 - Added a single shared-password gate in front of the whole app

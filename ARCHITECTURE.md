@@ -13,7 +13,7 @@ it's built and why, for anyone about to change it.
 - [Client questions and the answer loop](#client-questions-and-the-answer-loop)
 - [The Streamlit session pattern](#the-streamlit-session-pattern)
 - [Visual theme](#visual-theme)
-- [Extraction is pattern-based, not universal](#extraction-is-pattern-based-not-universal)
+- [Unrecognized bank formats: the self-teaching fallback](#unrecognized-bank-formats-the-self-teaching-fallback)
 - [Testing](#testing)
 
 ## Pipeline, module by module
@@ -54,21 +54,51 @@ so every module is independently unit-testable (and is: see
    level on a real statement — two entirely different root causes that both
    look like "the words ran together").
 
-3. **`core/spreadsheet_parser.py`** — `SpreadsheetParser`. Client Excel/CSV
+   For the general bank-statement strategy specifically, an unrecognized
+   bank's format no longer has to be fixed by hand — see
+   [Unrecognized bank formats: the self-teaching fallback](#unrecognized-bank-formats-the-self-teaching-fallback)
+   below, which covers this module together with `bank_profiles.py`,
+   `llm_extractor.py`, and `bank_learner.py`.
+
+3. **`core/bank_profiles.py`** — `BankProfile`, `load_bank_profiles`,
+   `save_bank_profile`. A learned bank's section-header vocabulary, stored
+   as JSON under `bank_profiles/` (committed to the repo — it's a bank's
+   public statement wording, never client data), not new Python. Malformed
+   or missing profile files are skipped, never raised, since a bad profile
+   must not be able to break parsing for every other document.
+
+4. **`core/llm_extractor.py`** — `extract_transactions_llm`. The paid
+   escalation path for a statement `pdf_parser.py`'s rules don't recognize
+   at all. Sends the PDF to Claude for a literal transcription only (never
+   categorization) via a `strict: true` tool call with a fixed JSON schema,
+   so the result is exactly as typed and shaped as a rule-based extraction
+   — every transcribed transaction still goes through the ordinary
+   `TaxCategorizer.categorize_transaction()` call. Needs
+   `ANTHROPIC_API_KEY` in the environment (see
+   [README.md](README.md#unrecognized-bank-formats)); a missing key or
+   package raises a clean, catchable `RuntimeError`, not a crash.
+
+5. **`core/bank_learner.py`** — `learn_bank_profile`. Asks Claude to name
+   the section-header phrases in a statement `llm_extractor.py` already
+   transcribed successfully, returning a candidate `BankProfile`. Never
+   trusted on its own — see the self-teaching section below for how the
+   caller verifies it before saving.
+
+6. **`core/spreadsheet_parser.py`** — `SpreadsheetParser`. Client Excel/CSV
    files vary in whether income is the positive or negative sign
    (`_detect_sign_convention` classifies each sheet as `standard`,
    `inverted`, or `unsigned` and normalizes to the tool-wide convention:
    income positive, expenses negative — the same convention the PDF parser
    uses).
 
-4. **`core/totals_parser.py`** — `TotalsParser`. Maps client-provided
+7. **`core/totals_parser.py`** — `TotalsParser`. Maps client-provided
    year-end totals to Schedule C lines with special-rule flags (vehicle
    mileage vs. actual, the 50% meals limitation, the 1099 threshold, health
    insurance belonging on Schedule 1 not Schedule C, home office). Not
    currently reachable from the UI — see
    [README.md](README.md#known-limitations--roadmap).
 
-5. **`core/tax_categorizer.py`** — `TaxCategorizer`. The keyword dictionary
+8. **`core/tax_categorizer.py`** — `TaxCategorizer`. The keyword dictionary
    (`SCHEDULE_C_CATEGORIES`) and the Non-P&L exclusion patterns
    (`NON_PNL_PATTERNS`), both matched on **word boundaries**, not bare
    substrings — a short/generic keyword like `mobil` (the gas brand) must
@@ -80,7 +110,7 @@ so every module is independently unit-testable (and is: see
    (`custom_rules.json`) take precedence over the built-in dictionary but
    not over Non-P&L detection.
 
-6. **`core/exception_analyzer.py`** — `ExceptionAnalyzer`. Scans every
+9. **`core/exception_analyzer.py`** — `ExceptionAnalyzer`. Scans every
    transaction into review queues: potential personal expense, potential
    fixed asset (over the de minimis threshold, or matching an
    asset-shaped keyword), 1099 accumulation per contractor, unusual/large
@@ -90,13 +120,13 @@ so every module is independently unit-testable (and is: see
    is skipped — this, not category text, is what lets an answered question
    stop regenerating.
 
-7. **`core/vendor_grouping.py`** — `group_potential_personal`. Groups
+10. **`core/vendor_grouping.py`** — `group_potential_personal`. Groups
    personal-expense-review transactions by vendor (P2P payment apps grouped
    by service *and* recipient specifically, so different people paid through
    the same app are never merged) and applies the materiality threshold to
    each group's total, not each individual charge.
 
-8. **`core/question_generator.py`** — `ClientQuestionGenerator`. Builds the
+11. **`core/question_generator.py`** — `ClientQuestionGenerator`. Builds the
    client-facing question list from the exception queues. Every question
    carries `transaction_keys` — a list, even for a single-transaction
    question — back to the exact transaction(s) it concerns (see
@@ -104,7 +134,7 @@ so every module is independently unit-testable (and is: see
    date + payee + amount + source file, since there's no database or
    synthetic id in a stateless single-session app).
 
-9. **`core/answer_applier.py`** — `apply_client_answers`. Applies an
+12. **`core/answer_applier.py`** — `apply_client_answers`. Applies an
    answered question to the transaction list. Answers are a fixed
    vocabulary per question type (`ANSWER_OPTIONS`), never free text, so this
    module never has to guess what an answer meant — an answer outside the
@@ -113,10 +143,10 @@ so every module is independently unit-testable (and is: see
    by hand and changes nothing. Every transaction it touches is stamped
    `client_confirmed=True`.
 
-10. **`core/reconciliation.py`** — `ReconciliationChecker`. See
+13. **`core/reconciliation.py`** — `ReconciliationChecker`. See
     [Reconciliation](#reconciliation).
 
-11. **`core/excel_exporter.py`** — `ExcelWorkpaperExporter`. Builds the
+14. **`core/excel_exporter.py`** — `ExcelWorkpaperExporter`. Builds the
     seven-sheet workbook described in [README.md](README.md#what-it-produces).
 
 ## Confidence states
@@ -260,20 +290,72 @@ Two hard constraints worth knowing before touching this:
   re-check the selectors against the new version's frontend bundle (or a
   live render) before trusting them again.
 
-## Extraction is pattern-based, not universal
+## Unrecognized bank formats: the self-teaching fallback
 
 The three-strategy PDF architecture (P&L report / credit card / general
 bank) and the categorization engine (word-boundary keyword matching,
 Non-P&L exclusion patterns) are general-purpose and apply to any uploaded
-file. The specific *regex patterns* inside each strategy — section header
-wording, cleared-checks table layout, which literal phrases mean "this is a
-credit card payment" — were built and verified against real statements from
-two specific banks. A statement from a bank not yet tested against may
-extract fewer transactions than it should, silently, the first time it's
-tried; this has been the source of nearly every extraction bug found so
-far, each fixed by testing against the real file and adjusting the pattern
-(see [CHANGELOG.md](CHANGELOG.md)). Treat a new bank's first real statement
-as something to verify via the Reconciliation QC tab, not assume works.
+file. The specific *section-header vocabulary* inside the general-bank
+strategy — what phrase means "this is the deposits section," "this is the
+cleared-checks listing" — started out hardcoded for two banks (Regions,
+Capital One), and this is exactly what broke on a real Chase statement:
+Chase's own header wording ("ATM & Debit Card Withdrawals," "Electronic
+Withdrawals") matched none of it, and — worse — a repeated "Total ATM
+Withdrawals & Debits $0.00" rollup line in Chase's own summary table
+happened to contain the same substring the header check looked for,
+flipping the parser's internal section state to the wrong value and
+turning every row of the statement's daily-balance table into a phantom
+deposit (see [CHANGELOG.md](CHANGELOG.md), 2026-09-17 — Gross Receipts was
+reported at ~$1.3M on a real engagement where the true figure was
+$142,223.72).
+
+Chase's specific header phrases are now hardcoded too, the same way
+Regions' and Capital One's are — but the next unrecognized bank no longer
+needs a human to notice, diagnose, and patch `pdf_parser.py` by hand before
+it's usable. `BankPDFParser.parse_pdf()` runs an escalation chain instead:
+
+1. **Rules engine** (`_parse_general_or_scanned_pdf`, free, instant) — the
+   hardcoded vocabulary, same as before.
+2. **Self-check** (`_extraction_looks_reliable`) — does what was extracted
+   foot against what the statement itself declares (its own "Total
+   Deposits" / "Total Withdrawals" figures, captured by
+   `_capture_balances` independently of section-header detection)? If
+   there's nothing declared to check against, falls back to "did we
+   extract at least one transaction at all." A statement from an
+   already-known bank passes this and stops here — nothing below ever
+   runs for it.
+3. **Learned profiles** (`core/bank_profiles.py`, free) — every
+   `bank_profiles/*.json` file is tried in turn, feeding its phrases into
+   the same rules engine (`_parse_general_or_scanned_pdf(..., profile=...)`
+   — additive, not a separate code path) until one passes the same
+   self-check.
+4. **LLM fallback** (`core/llm_extractor.py`, a few cents, only reached if
+   1–3 all failed) — Claude transcribes the PDF literally (date, payee,
+   amount, direction, plus the statement's own declared totals) via a
+   `strict: true` tool call. The transcribed transactions still go through
+   the ordinary rule-based `TaxCategorizer` — an LLM is used for extraction
+   only, never for deciding a tax category. The result is self-checked the
+   same way (step 2) against the totals it *also* transcribed: if what was
+   "read" doesn't sum to what the statement says it should, that surfaces
+   as a reconciliation problem, never a silently wrong number.
+5. **Learning** (`core/bank_learner.py`) — only attempted once step 4
+   already passed its self-check. Asks Claude to name this bank's
+   section-header phrases, then re-runs the rules engine with that
+   candidate profile against the *same* document and compares the result
+   to the LLM's own verified numbers. Only a profile that reproduces them
+   exactly is saved to `bank_profiles/`; the app never trusts an unverified
+   profile, and a profile that fails this check is simply discarded — that
+   bank keeps using the LLM path until one that passes exists. A failure
+   anywhere in this step is swallowed (never allowed to take down an
+   extraction that already succeeded at step 4).
+
+Net effect: a brand-new bank costs a few cents the first time (maybe twice,
+if the first attempt's profile doesn't reproduce cleanly), then $0 forever
+after, with zero code changes required. The sidebar toggle ("Use AI
+fallback...") and `ANTHROPIC_API_KEY` gate step 4 entirely — with no key
+configured, an unrecognized statement stops after step 3 and is flagged in
+its diagnostics notes for manual review, exactly as before this fallback
+existed; nothing about a recognized bank's behavior changes either way.
 
 ## Testing
 

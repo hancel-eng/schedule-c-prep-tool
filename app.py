@@ -19,7 +19,7 @@ from theme import CSS, render_progress_steps
 # Bumped on every meaningful change to this file, so whoever is looking at the
 # app can tell which version is running just by glancing at the sidebar --
 # there is no separate deploy/build pipeline that would otherwise show that.
-APP_VERSION = "v4"
+APP_VERSION = "v5"
 
 # Page Configuration
 st.set_page_config(
@@ -44,6 +44,23 @@ def _get_app_password() -> str:
         return st.secrets.get("app_password", "")
     except FileNotFoundError:
         return ""
+
+
+def _get_anthropic_api_key() -> str:
+    """Same "no secrets file at all" guard as _get_app_password(). Checked
+    once at startup below, which also copies it into os.environ so
+    core/llm_extractor.py and core/bank_learner.py -- both framework-
+    agnostic, no Streamlit import -- can read it the ordinary way any
+    Anthropic SDK code does."""
+    try:
+        return st.secrets.get("ANTHROPIC_API_KEY", "") or os.environ.get("ANTHROPIC_API_KEY", "")
+    except FileNotFoundError:
+        return os.environ.get("ANTHROPIC_API_KEY", "")
+
+
+_anthropic_key = _get_anthropic_api_key()
+if _anthropic_key:
+    os.environ["ANTHROPIC_API_KEY"] = _anthropic_key
 
 
 def check_password() -> bool:
@@ -98,6 +115,25 @@ materiality_threshold = st.sidebar.number_input(
          "question at all -- no one needs to be asked about a single $3 charge. "
          "Applies to the group's total, not each individual charge."
 )
+
+st.sidebar.markdown("---")
+st.sidebar.header("Unrecognized Statement Format")
+if _anthropic_key:
+    enable_llm_fallback = st.sidebar.checkbox(
+        "Use AI fallback for statements the rule-based parser can't read", value=True,
+        help="Only used when a statement's own section headers don't match any bank "
+             "this tool already knows (its extracted totals don't reconcile against "
+             "what the statement declares) -- a normal Regions/Capital One/Chase "
+             "statement never reaches this. Costs a few cents per unrecognized file. "
+             "If it works, the bank's format is learned and reused for free afterward."
+    )
+else:
+    enable_llm_fallback = False
+    st.sidebar.caption(
+        "No ANTHROPIC_API_KEY configured -- an unrecognized statement format will be "
+        "flagged for manual review instead of an AI fallback. See "
+        "[.streamlit/secrets.toml.example](https://github.com/hancel-eng/schedule-c-prep-tool/blob/main/.streamlit/secrets.toml.example)."
+    )
 
 # Custom payee rules a prior session may have saved (core/tax_categorizer.py's
 # TaxCategorizer loads custom_rules.json automatically) still apply here even
@@ -156,7 +192,7 @@ if uploaded_files:
             dedup = FilenameDeduplicator()
             unique_files, duplicates_flagged = dedup.process_files(uploaded_files)
 
-            pdf_parser = BankPDFParser(categorizer=categorizer)
+            pdf_parser = BankPDFParser(categorizer=categorizer, enable_llm_fallback=enable_llm_fallback)
             sheet_parser = SpreadsheetParser(categorizer=categorizer)
             totals_parser = TotalsParser()
 

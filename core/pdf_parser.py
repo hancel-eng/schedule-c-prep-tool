@@ -1,3 +1,4 @@
+import io
 import re
 import os
 from typing import List, Dict, Any, Optional
@@ -9,6 +10,7 @@ except ImportError:
     pdfplumber = None
 
 from core.tax_categorizer import TaxCategorizer
+from core.bank_profiles import BankProfile, load_bank_profiles, save_bank_profile
 
 # Strict Pydantic Data Models
 class TransactionItem(BaseModel):
@@ -143,8 +145,39 @@ class BankPDFParser:
     check photos, and scanned receipt PDFs using a 3-strategy multi-pipeline engine.
     """
 
-    def __init__(self, categorizer: TaxCategorizer = None):
+    def __init__(self, categorizer: TaxCategorizer = None, enable_llm_fallback: bool = True):
         self.categorizer = categorizer or TaxCategorizer()
+        # Escalation to core/llm_extractor.py for a statement whose format
+        # the rules engine doesn't recognize at all -- see parse_pdf() and
+        # _recover_unrecognized_bank(). Off by default has no cost either
+        # way (the LLM path is only ever reached when the rules engine
+        # already failed its own self-check), but callers that want to
+        # guarantee zero API spend (no ANTHROPIC_API_KEY configured, or a
+        # deliberate cost-control choice) can disable it here.
+        self.enable_llm_fallback = enable_llm_fallback
+
+    def _read_all_bytes(self, file_source) -> bytes:
+        """Normalizes a path / bytes / file-like object (e.g. Streamlit's
+        UploadedFile) into plain bytes, once, so every strategy below reads
+        from its own fresh io.BytesIO(...) instead of racing over a single
+        shared stream position -- needed now that an unrecognized statement
+        can be parsed more than once (rules engine, then learned profiles,
+        then the LLM fallback)."""
+        if isinstance(file_source, (bytes, bytearray)):
+            return bytes(file_source)
+        if isinstance(file_source, str):
+            with open(file_source, "rb") as f:
+                return f.read()
+        if not hasattr(file_source, "read"):
+            # Not a real file source (e.g. a test passing None to exercise
+            # filename-routing alone) -- let the downstream strategy's own
+            # try/except around pdfplumber.open(...) handle it the same way
+            # it always has, rather than raising here.
+            return b""
+        data = file_source.read()
+        if hasattr(file_source, "seek"):
+            file_source.seek(0)
+        return data
 
     def parse_pdf(self, file_path_or_bytes, filename: str) -> Dict[str, Any]:
         """
@@ -152,18 +185,22 @@ class BankPDFParser:
         """
         statement_year = self._extract_year_from_filename(filename) or 2025
         statement_end_month = self._extract_statement_end_month_from_filename(filename)
-        doc_data = FinancialDocumentData(bank_or_vendor=filename)
+        raw_bytes = self._read_all_bytes(file_path_or_bytes)
 
         # Detect Document Category
         is_pnl = "p & l" in filename.lower() or "pnl" in filename.lower() or "profit" in filename.lower()
         is_credit_card = any(kw in filename.lower() for kw in ["capital one", "spark", "card", "chase card", "amex", "citi"])
 
         if is_pnl:
-            doc_data = self._parse_pnl_report(file_path_or_bytes, filename, statement_year)
+            doc_data = self._parse_pnl_report(io.BytesIO(raw_bytes), filename, statement_year)
         elif is_credit_card:
-            doc_data = self._parse_credit_card_pdf(file_path_or_bytes, filename, statement_year, statement_end_month)
+            doc_data = self._parse_credit_card_pdf(io.BytesIO(raw_bytes), filename, statement_year, statement_end_month)
         else:
-            doc_data = self._parse_general_or_scanned_pdf(file_path_or_bytes, filename, statement_year, statement_end_month)
+            doc_data = self._parse_general_or_scanned_pdf(io.BytesIO(raw_bytes), filename, statement_year, statement_end_month)
+            if self.enable_llm_fallback and not self._extraction_looks_reliable(doc_data):
+                doc_data = self._recover_unrecognized_bank(
+                    raw_bytes, filename, statement_year, statement_end_month, doc_data
+                )
 
         tx_dicts = [tx.model_dump() for tx in doc_data.transactions]
         months_found = list(set([self._extract_month(tx['date']) for tx in tx_dicts if tx.get('date')]))
@@ -491,9 +528,20 @@ class BankPDFParser:
     # STRATEGY 3: GENERAL BANK, SCANNED INVOICE, CHECK & RECEIPT PARSER
     # -------------------------------------------------------------------------
     def _parse_general_or_scanned_pdf(self, file_source, filename: str, year: int,
-                                      statement_end_month: Optional[int] = None) -> FinancialDocumentData:
+                                      statement_end_month: Optional[int] = None,
+                                      profile: Optional[BankProfile] = None) -> FinancialDocumentData:
+        """`profile` (see core/bank_profiles.py) adds a bank's learned
+        section-header phrases on top of the hardcoded Regions/Capital One/
+        Chase vocabulary below -- called with no profile, behavior is
+        unchanged from before profiles existed; called with one, its phrases
+        are additional ways to recognize each section, tried alongside the
+        hardcoded ones rather than instead of them."""
         data = FinancialDocumentData(document_type="bank_or_receipt", bank_or_vendor="LifeGreen / Regions Business Checking", statement_type="bank_statement", bank_name="LifeGreen / Regions Business Checking")
         transactions = []
+        profile_deposit_headers = [h.lower() for h in (profile.deposit_headers if profile else [])]
+        profile_withdrawal_headers = [h.lower() for h in (profile.withdrawal_headers if profile else [])]
+        profile_checks_headers = [h.lower() for h in (profile.checks_headers if profile else [])]
+        profile_skip_headers = [h.lower() for h in (profile.daily_balance_skip_headers if profile else [])]
 
         if not pdfplumber:
             return data
@@ -549,7 +597,8 @@ class BankPDFParser:
                         if is_rollup_line:
                             pass
                         elif ("deposits & credits" in l_lower or "deposits and credits" in l_lower or
-                              l_lower.strip().startswith("deposits and additions")):
+                              l_lower.strip().startswith("deposits and additions") or
+                              any(l_lower.strip().startswith(h) for h in profile_deposit_headers)):
                             current_section = "DEPOSIT"
                             continue
                         elif (l_lower.strip().startswith("withdrawals") or
@@ -557,7 +606,8 @@ class BankPDFParser:
                               "electronic debits" in l_lower or
                               l_lower.strip().startswith("atm & debit card withdrawals") or
                               l_lower.strip().startswith("atm and debit card withdrawals") or
-                              l_lower.strip().startswith("electronic withdrawals")):
+                              l_lower.strip().startswith("electronic withdrawals") or
+                              any(l_lower.strip().startswith(h) for h in profile_withdrawal_headers)):
                             # A real Regions statement prints this header as the
                             # bare word "WITHDRAWALS" (and "WITHDRAWALS
                             # (CONTINUED)" on later pages) -- not "WITHDRAWALS &
@@ -575,7 +625,8 @@ class BankPDFParser:
                             # Withdrawals") instead of one bare "WITHDRAWALS".
                             current_section = "EXPENSE"
                             continue
-                        elif l_lower.strip() == "checks" or l_lower.strip().startswith("checks paid"):
+                        elif (l_lower.strip() == "checks" or l_lower.strip().startswith("checks paid") or
+                              any(l_lower.strip().startswith(h) for h in profile_checks_headers)):
                             # A cleared-checks listing. Regions prints these as
                             # "Date Check No. Amount" pairs, TWO pairs per line
                             # (a left column and a right column) -- a different
@@ -591,7 +642,8 @@ class BankPDFParser:
                             current_section = "CHECK_DETAIL"
                             continue
                         elif ("daily balance summary" in l_lower or
-                              l_lower.strip().startswith("daily ending balance")):
+                              l_lower.strip().startswith("daily ending balance") or
+                              any(l_lower.strip().startswith(h) for h in profile_skip_headers)):
                             # A repeating "date balance date balance date
                             # balance" table -- every field on these lines is a
                             # date followed by a dollar-looking number, which is
@@ -961,7 +1013,7 @@ class BankPDFParser:
     def check_12_month_coverage(self, months_found: List[int]) -> Dict[str, Any]:
         unique_months = set([m for m in months_found if m and 1 <= m <= 12])
         missing_months = sorted(list(set(range(1, 13)) - unique_months))
-        
+
         is_complete = len(missing_months) == 0
         return {
             "is_complete": is_complete,
@@ -969,3 +1021,116 @@ class BankPDFParser:
             "missing_months": missing_months,
             "status_message": "All 12 months present" if is_complete else f"Missing {len(missing_months)} statement month(s): {missing_months}"
         }
+
+    # -------------------------------------------------------------------------
+    # ESCALATION: unrecognized bank format -- learned profiles, then LLM
+    # -------------------------------------------------------------------------
+    def _extraction_looks_reliable(self, doc_data: FinancialDocumentData) -> bool:
+        """Cheap self-check used to decide whether an extraction should be
+        trusted or escalated to the next fallback: does what was extracted
+        add up to what the statement itself declared? This mirrors the same
+        arithmetic ReconciliationChecker performs on a whole document later,
+        but inline and self-contained, so parse_pdf() can decide on a
+        fallback for a single document without importing that module.
+
+        A document with nothing declared to check against (no balance/total
+        lines this parser's BALANCE_PATTERNS recognized) falls back to a
+        weaker signal: did we extract at least one transaction at all. That
+        keeps a genuinely-empty-but-fine statement (e.g. zero activity) from
+        being treated as unreliable.
+        """
+        extracted_deposits = sum(t.amount for t in doc_data.transactions if t.is_deposit)
+        extracted_withdrawals = sum(abs(t.amount) for t in doc_data.transactions if not t.is_deposit)
+        declared_deposits = doc_data.total_deposits or 0.0
+        declared_withdrawals = doc_data.total_withdrawals or 0.0
+
+        if declared_deposits == 0.0 and declared_withdrawals == 0.0:
+            return len(doc_data.transactions) > 0
+
+        tolerance = 0.01
+        return (abs(extracted_deposits - declared_deposits) <= tolerance and
+                abs(extracted_withdrawals - declared_withdrawals) <= tolerance)
+
+    def _sums_match(self, a: FinancialDocumentData, b: FinancialDocumentData,
+                     tolerance: float = 0.01) -> bool:
+        a_dep = sum(t.amount for t in a.transactions if t.is_deposit)
+        b_dep = sum(t.amount for t in b.transactions if t.is_deposit)
+        a_wd = sum(abs(t.amount) for t in a.transactions if not t.is_deposit)
+        b_wd = sum(abs(t.amount) for t in b.transactions if not t.is_deposit)
+        return abs(a_dep - b_dep) <= tolerance and abs(a_wd - b_wd) <= tolerance
+
+    def _recover_unrecognized_bank(self, raw_bytes: bytes, filename: str, year: int,
+                                    statement_end_month: Optional[int],
+                                    fallback_data: FinancialDocumentData) -> FinancialDocumentData:
+        """Escalation path for a statement the rules engine's default
+        vocabulary doesn't recognize (its own extracted totals don't foot
+        against what the statement declares -- see
+        _extraction_looks_reliable). Tries every previously learned bank
+        profile first (free, see core/bank_profiles.py), then the LLM
+        (core/llm_extractor.py -- costs a few cents). If the LLM's result
+        checks out against the statement's own declared totals, attempts to
+        learn a reusable profile from it (core/bank_learner.py) so the next
+        statement from this same bank is free too. Learning is a bonus, not
+        a requirement: any failure in that last step is swallowed, since it
+        must never take down an extraction that already succeeded.
+        """
+        for profile in load_bank_profiles():
+            candidate = self._parse_general_or_scanned_pdf(
+                io.BytesIO(raw_bytes), filename, year, statement_end_month, profile=profile
+            )
+            if self._extraction_looks_reliable(candidate):
+                candidate.diagnostics_notes.append(
+                    f"Unrecognized by the default rules -- matched learned bank profile "
+                    f"'{profile.bank_slug}' instead (no LLM call needed)."
+                )
+                return candidate
+
+        try:
+            from core.llm_extractor import extract_transactions_llm
+        except ImportError as e:
+            fallback_data.diagnostics_notes.append(
+                f"Unrecognized statement format and the LLM fallback isn't available ({e}). "
+                f"Extraction below may be incomplete -- verify manually via Reconciliation QC."
+            )
+            return fallback_data
+
+        try:
+            llm_data = extract_transactions_llm(raw_bytes, filename, year, self.categorizer)
+        except Exception as e:
+            fallback_data.diagnostics_notes.append(
+                f"Unrecognized statement format; LLM fallback failed ({e}). "
+                f"Extraction below may be incomplete -- verify manually via Reconciliation QC."
+            )
+            return fallback_data
+
+        if not self._extraction_looks_reliable(llm_data):
+            llm_data.diagnostics_notes.append(
+                "Unrecognized statement format; the LLM fallback's own extraction did not "
+                "reconcile against the statement's declared totals either -- review by hand."
+            )
+            return llm_data
+
+        llm_data.diagnostics_notes.append(
+            "Unrecognized statement format -- extracted via LLM fallback and reconciles "
+            "against the statement's own declared totals."
+        )
+
+        try:
+            with pdfplumber.open(io.BytesIO(raw_bytes)) as pdf:
+                raw_text = "\n".join(self._extract_page_text(p) for p in pdf.pages)
+            from core.bank_learner import learn_bank_profile
+            profile = learn_bank_profile(raw_text, llm_data, filename)
+            if profile is not None:
+                reproduced = self._parse_general_or_scanned_pdf(
+                    io.BytesIO(raw_bytes), filename, year, statement_end_month, profile=profile
+                )
+                if self._extraction_looks_reliable(reproduced) and self._sums_match(reproduced, llm_data):
+                    save_bank_profile(profile)
+                    llm_data.diagnostics_notes.append(
+                        f"Learned a reusable profile for this bank ('{profile.bank_slug}') -- "
+                        "future statements from it will be parsed for free, no LLM call needed."
+                    )
+        except Exception:
+            pass
+
+        return llm_data

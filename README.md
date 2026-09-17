@@ -66,15 +66,14 @@ every bug found along the way fixed and the final numbers checked by hand.
 See [CHANGELOG.md](CHANGELOG.md) for the full history of what was found and
 fixed.
 
-**Two things worth knowing before relying on it for a new client:**
+**One thing worth knowing before relying on it for a new client:**
 
 - It can't read a *scanned image* of a statement (a photo of a check, for
   example) — only PDFs with real, selectable text. There's no OCR yet.
-- Its extraction rules were built and tested against two specific banks
-  (Regions and Capital One). A statement from a different bank will still
-  process, but may need a small rule adjustment the first time — check the
-  **Reconciliation QC** section of the results before trusting a brand-new
-  bank's numbers.
+
+A statement from a bank the tool hasn't seen before used to need a manual
+code fix the first time. It no longer does — see
+[Unrecognized bank formats](#unrecognized-bank-formats) below.
 
 See [Known limitations & roadmap](#known-limitations--roadmap) below for
 the complete list.
@@ -155,10 +154,13 @@ in your browser tab while you're working.
   Needs Review, or Unresolved. Anything short of High Confidence goes to
   the exception/question list instead of being silently assigned a
   category.
-- **No AI/LLM is used to read the statements.** Extraction is done with
-  deterministic rules (pattern matching against real statement text), not
-  a language model — cheaper, faster on large files, and every result can
-  be traced back to exactly why the tool made that call.
+- **Statements are read by deterministic rules, not AI, by default.**
+  Every result can be traced back to exactly why the tool made that call.
+  AI (Claude) only ever gets involved as a fallback for a bank the tool
+  has genuinely never seen before, and even then only to transcribe what's
+  printed — never to decide a tax category or a dollar total, and never
+  for a bank already recognized. See
+  [Unrecognized bank formats](#unrecognized-bank-formats).
 - **One client, one session.** Nothing carries over between clients, and
   nothing is stored outside your browser tab while you're working.
 - **Duplicate files are caught by filename, not by comparing individual
@@ -175,6 +177,9 @@ theme.py                      Visual design (colors, fonts, layout)
 core/                         All the actual business logic, independent
                                of the app — see ARCHITECTURE.md for detail
   pdf_parser.py                 Reads bank/credit-card statement PDFs
+  bank_profiles.py               Loads/saves a learned bank's header vocabulary
+  llm_extractor.py                AI fallback: transcribes an unrecognized statement
+  bank_learner.py                 Proposes a reusable profile from that transcription
   spreadsheet_parser.py         Reads client Excel/CSV files
   totals_parser.py              Reads client-provided year-end totals
   tax_categorizer.py            Decides which Schedule C line a transaction belongs on
@@ -195,6 +200,43 @@ create_sample_data.py         Regenerates the sample files
 For how the pieces above actually work together, see
 **[ARCHITECTURE.md](ARCHITECTURE.md)**.
 
+## Unrecognized bank formats
+
+Bank/credit-card statements are read by a fast, free, deterministic
+rule-based parser — but every bank prints its statements a little
+differently, and the rules for a brand-new bank used to need a manual code
+fix before that bank's numbers could be trusted.
+
+That's no longer true. When a statement's format doesn't match any bank the
+tool already knows, it automatically:
+
+1. Tries every bank format it has already learned (still free, instant).
+2. If none match, asks Claude (Anthropic's AI) to read that one statement
+   and transcribe every transaction — costs a few cents, and only ever
+   happens for a genuinely new bank, never for one already recognized.
+3. If that reads correctly (double-checked against the statement's own
+   declared totals — see
+   [ARCHITECTURE.md](ARCHITECTURE.md#unrecognized-bank-formats-the-self-teaching-fallback)
+   for exactly how), the tool figures out that bank's format on its own and
+   saves it, so **every statement from that bank after the first is free**
+   — no AI, no manual fix, no waiting on a developer.
+
+**To turn this on**, add an Anthropic API key to Streamlit secrets:
+
+```toml
+# .streamlit/secrets.toml (locally) or the app's Settings -> Secrets (on
+# Streamlit Community Cloud)
+ANTHROPIC_API_KEY = "sk-ant-..."
+```
+
+See [.streamlit/secrets.toml.example](.streamlit/secrets.toml.example).
+Without a key configured, an unrecognized statement is simply flagged for
+manual review instead — nothing else about the tool changes, and a
+recognized bank's statements are never affected either way. A sidebar
+toggle ("Use AI fallback for statements the rule-based parser can't read")
+lets you turn this off per-session even with a key configured, if you'd
+rather review an unrecognized statement by hand than spend the few cents.
+
 ## Known limitations & roadmap
 
 - **No OCR.** A scanned image (not real text) yields zero transactions with
@@ -207,10 +249,8 @@ For how the pieces above actually work together, see
 - **Transfers between a client's own accounts, across two different
   uploaded files,** are only caught when the transaction's own description
   makes it obvious. There's no cross-file matching by date and amount yet.
-- **Extraction rules are proven against specific banks (Regions, Capital
-  One), not universal** — a new bank may need a small adjustment the first
-  time. See
-  [ARCHITECTURE.md](ARCHITECTURE.md#extraction-is-pattern-based-not-universal).
+- **A brand-new bank's format is no longer a manual fix.** See
+  [Unrecognized bank formats](#unrecognized-bank-formats) below.
 
 See **[CHANGELOG.md](CHANGELOG.md)** for everything that's already been
 found and fixed.
