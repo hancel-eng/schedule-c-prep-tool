@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import io
 import os
+import subprocess
 from typing import List, Dict, Any
 
 from core.deduplication import FilenameDeduplicator
@@ -20,7 +21,24 @@ from theme import CSS, render_progress_steps
 # Bumped on every meaningful change to this file, so whoever is looking at the
 # app can tell which version is running just by glancing at the sidebar --
 # there is no separate deploy/build pipeline that would otherwise show that.
-APP_VERSION = "v11"
+APP_VERSION = "v12"
+
+
+def _running_commit() -> str:
+    """Short git commit hash of the code actually running, so a stale
+    Streamlit Cloud deploy (same APP_VERSION, old commit underneath) is
+    visible in the sidebar instead of silently indistinguishable from a
+    fresh one. Returns "unknown" if git isn't available at runtime."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            capture_output=True, text=True, timeout=5,
+        )
+        commit = result.stdout.strip()
+        return commit if result.returncode == 0 and commit else "unknown"
+    except Exception:
+        return "unknown"
 
 # Page Configuration
 st.set_page_config(
@@ -1036,4 +1054,4 @@ else:
     st.warning("Please upload bank statement PDFs or spreadsheets to begin processing.")
 
 st.sidebar.markdown("---")
-st.sidebar.caption(f"App version: {APP_VERSION}")
+st.sidebar.caption(f"App version: {APP_VERSION} (commit {_running_commit()})")
