@@ -8,6 +8,41 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for how the current system works,
 and [README.md](README.md#known-limitations--roadmap) for what's still
 open.
 
+## 2026-10-01 — Fixed: the AI fallback never ran for a real Wells Fargo client
+
+Root cause of "I uploaded the new bank's statements with the API key
+configured and got the exact same broken numbers as before": a real Wells
+Fargo statement prints its deposit/withdrawal recap as "Deposits/Additions"
+and "Withdrawals/Subtractions" -- no "Total" prefix, the exact phrase
+`BALANCE_PATTERNS` requires -- so `total_deposits`/`total_withdrawals` both
+silently stayed `0.0` even though the statement's own beginning/ending
+balance *did* get captured correctly. `_extraction_looks_reliable()` had
+no third tier for that case: with nothing declared to compare against, it
+fell back straight to "did we extract at least one transaction," which a
+badly wrong extraction still passes trivially.
+
+And this statement's extraction genuinely was badly wrong, for an
+unrelated reason: Wells Fargo prints a running daily balance on the same
+line as most transactions, and the universal date+description+amount
+regex always grabs the *last* money-shaped number on a line -- which was
+the running balance, not the transaction amount. One statement's
+"expenses" came out over $200,000 this way. Both bugs compounding meant
+the AI fallback -- specifically built to catch exactly this kind of
+garbage -- never even ran, on any of the 12 statements tested.
+
+Fixed generally, not by hand-patching Wells Fargo's layout: added a middle
+tier to `_extraction_looks_reliable()` that checks the statement's own
+`beginning_balance + deposits - withdrawals == ending_balance` whenever
+beginning/ending balance were captured but total_deposits/total_withdrawals
+weren't -- a check this method already had the data for but never used.
+This is what actually fixes it, deliberately: it strengthens the
+self-check for *every* bank with this declared-totals shape, not just
+Wells Fargo, consistent with "no more fixes needed per bank, ever" rather
+than adding a Wells-Fargo-specific regex. Confirmed on the real statements:
+all 12 now correctly fail the self-check and escalate -- the fallback
+itself hasn't been tested yet against a real OpenAI response; that's the
+next step now that the escalation actually triggers.
+
 ## 2026-10-01 — AI fallback switched from Anthropic to OpenAI
 
 The AI fallback (`core/llm_extractor.py`, `core/bank_learner.py`) ran on

@@ -9,7 +9,7 @@ import pytest
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 
-from core.pdf_parser import BankPDFParser, FinancialDocumentData
+from core.pdf_parser import BankPDFParser, FinancialDocumentData, TransactionItem
 from core.tax_categorizer import TaxCategorizer
 
 
@@ -308,3 +308,53 @@ def test_checks_paid_recap_line_does_not_prematurely_start_check_detail_mode():
     data = parser._parse_general_or_scanned_pdf(pdf, "Bank Statement 01 23 2025.pdf", 2025, 1)
     by_payee = {tx.payee: tx for tx in data.transactions}
     assert by_payee["Deposit 1188271441"].is_deposit is True
+
+
+# --- Reliability self-check must use beginning/ending balance, not just
+# declared totals (a real Wells Fargo statement slipped through) ----------
+
+def test_reliability_check_uses_balance_equation_when_no_declared_totals():
+    """A real Wells Fargo statement prints "Deposits/Additions" and
+    "Withdrawals/Subtractions" (no "Total" prefix -- the exact phrase
+    BALANCE_PATTERNS looks for), so total_deposits/total_withdrawals both
+    stayed 0.0 even though beginning/ending balance *did* get captured.
+    Every transaction line also prints a trailing running-balance column,
+    which the universal date+description+amount regex read as the
+    transaction amount instead of the real one (it always grabs the LAST
+    money-shaped token on the line) -- one real statement's "expenses" came
+    out over $200,000 this way. Without this check, that garbage passed as
+    "reliable" purely because *something* was extracted, and the AI
+    fallback never got a chance to run."""
+    parser = BankPDFParser()
+
+    garbage = FinancialDocumentData(
+        beginning_balance=11436.72,
+        ending_balance=9383.90,
+        total_deposits=0.0,
+        total_withdrawals=0.0,
+        transactions=[
+            TransactionItem(
+                date="12/17/2025", payee="Planet Fit Club Fees", description="Planet Fit Club Fees",
+                amount=-11352.86,  # the running balance, not the real $16.05 fee
+                is_deposit=False, category="Line 27a: Other expenses", confidence_state="High Confidence",
+                confidence_score=0.7, source_file="wells.pdf",
+            ),
+        ],
+    )
+    assert parser._extraction_looks_reliable(garbage) is False
+
+    correct = FinancialDocumentData(
+        beginning_balance=11436.72,
+        ending_balance=11420.67,
+        total_deposits=0.0,
+        total_withdrawals=0.0,
+        transactions=[
+            TransactionItem(
+                date="12/17/2025", payee="Planet Fit Club Fees", description="Planet Fit Club Fees",
+                amount=-16.05,
+                is_deposit=False, category="Line 27a: Other expenses", confidence_state="High Confidence",
+                confidence_score=0.95, source_file="wells.pdf",
+            ),
+        ],
+    )
+    assert parser._extraction_looks_reliable(correct) is True

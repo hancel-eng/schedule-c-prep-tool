@@ -1033,23 +1033,47 @@ class BankPDFParser:
         but inline and self-contained, so parse_pdf() can decide on a
         fallback for a single document without importing that module.
 
-        A document with nothing declared to check against (no balance/total
-        lines this parser's BALANCE_PATTERNS recognized) falls back to a
-        weaker signal: did we extract at least one transaction at all. That
-        keeps a genuinely-empty-but-fine statement (e.g. zero activity) from
-        being treated as unreliable.
+        Three tiers, strongest signal first:
+        1. Declared total_deposits/total_withdrawals (BALANCE_PATTERNS
+           matched a "Total Deposits"/"Total Withdrawals"-shaped line) --
+           extracted must match them directly.
+        2. Declared beginning_balance/ending_balance, when (1) found
+           nothing. Some real statements (confirmed on Wells Fargo) print
+           their deposit/withdrawal recap as "Deposits/Additions" and
+           "Withdrawals/Subtractions" with no "Total" prefix -- the exact
+           phrase BALANCE_PATTERNS looks for -- so declared_deposits/
+           declared_withdrawals both silently stay 0.0 even though the
+           statement's own beginning/ending balance *did* get captured.
+           Without this tier, a garbage extraction (confirmed on the same
+           statement: a trailing running-balance column on most transaction
+           lines got read as the transaction amount, inflating one
+           statement's "expenses" past $200,000) fell through to tier 3 and
+           was wrongly treated as reliable purely because *something* got
+           extracted -- the AI fallback never even ran. Checks the
+           statement's own arithmetic instead: beginning + deposits -
+           withdrawals must equal ending.
+        3. Nothing declared at all to check against (truly bare of both
+           totals and running balances) -- weakest fallback, did we extract
+           at least one transaction. Keeps a genuinely-empty-but-fine
+           statement (e.g. zero activity) from being treated as unreliable.
         """
         extracted_deposits = sum(t.amount for t in doc_data.transactions if t.is_deposit)
         extracted_withdrawals = sum(abs(t.amount) for t in doc_data.transactions if not t.is_deposit)
         declared_deposits = doc_data.total_deposits or 0.0
         declared_withdrawals = doc_data.total_withdrawals or 0.0
-
-        if declared_deposits == 0.0 and declared_withdrawals == 0.0:
-            return len(doc_data.transactions) > 0
-
         tolerance = 0.01
-        return (abs(extracted_deposits - declared_deposits) <= tolerance and
-                abs(extracted_withdrawals - declared_withdrawals) <= tolerance)
+
+        if declared_deposits or declared_withdrawals:
+            return (abs(extracted_deposits - declared_deposits) <= tolerance and
+                    abs(extracted_withdrawals - declared_withdrawals) <= tolerance)
+
+        beginning_balance = doc_data.beginning_balance or 0.0
+        ending_balance = doc_data.ending_balance or 0.0
+        if beginning_balance or ending_balance:
+            computed_ending = beginning_balance + extracted_deposits - extracted_withdrawals
+            return abs(computed_ending - ending_balance) <= tolerance
+
+        return len(doc_data.transactions) > 0
 
     def _sums_match(self, a: FinancialDocumentData, b: FinancialDocumentData,
                      tolerance: float = 0.01) -> bool:
