@@ -1130,6 +1130,32 @@ class BankPDFParser:
                         f"Learned a reusable profile for this bank ('{profile.bank_slug}') -- "
                         "future statements from it will be parsed for free, no LLM call needed."
                     )
+                    # The local save above only lasts for this running
+                    # instance -- Streamlit Cloud's filesystem is ephemeral
+                    # and re-clones the repo from scratch on every redeploy,
+                    # which would otherwise silently discard every profile
+                    # learned since the last deploy. Committing it straight
+                    # back to bank_profiles/ in the repo is what makes "free
+                    # forever," not "free until the next deploy," actually
+                    # true. Requires GITHUB_TOKEN (see README.md); gracefully
+                    # degrades to local-only without it, same as every other
+                    # optional credential in this app.
+                    try:
+                        from core.github_profile_sync import commit_profile_to_github
+                        if commit_profile_to_github(profile):
+                            llm_data.diagnostics_notes.append(
+                                f"Committed the learned profile to GitHub "
+                                f"(bank_profiles/{profile.bank_slug}.json) so it survives the next deploy."
+                            )
+                        else:
+                            llm_data.diagnostics_notes.append(
+                                "Could not commit the learned profile to GitHub (no GITHUB_TOKEN "
+                                "configured, or the request failed) -- it will keep working for the "
+                                "rest of this running instance, but may need to be re-learned after "
+                                "the next deploy."
+                            )
+                    except Exception:
+                        pass
         except Exception:
             pass
 

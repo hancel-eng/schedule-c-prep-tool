@@ -212,6 +212,7 @@ core/                         All the actual business logic, independent
   bank_profiles.py               Loads/saves a learned bank's header vocabulary
   llm_extractor.py                AI fallback: transcribes an unrecognized statement
   bank_learner.py                 Proposes a reusable profile from that transcription
+  github_profile_sync.py          Commits a learned profile to GitHub so it survives a deploy
   spreadsheet_parser.py         Reads client Excel/CSV files
   totals_parser.py              Reads client-provided year-end totals
   tax_categorizer.py            Decides which Schedule C line a transaction belongs on
@@ -268,6 +269,27 @@ recognized bank's statements are never affected either way. A sidebar
 toggle ("Use AI fallback for statements the rule-based parser can't read")
 lets you turn this off per-session even with a key configured, if you'd
 rather review an unrecognized statement by hand than spend the few cents.
+
+**For a learned profile to survive a deploy**, also add a GitHub token:
+
+```toml
+GITHUB_TOKEN = "github_pat_..."
+```
+
+Without this second key, a learned profile still works — but only until the
+next time the app is redeployed (Streamlit Community Cloud's filesystem
+resets on every deploy, which would otherwise silently throw away every
+bank learned since the last one). With it, the app commits the learned
+profile straight back to `bank_profiles/` in this repo's `main` branch, so
+every future deploy already has it. The token needs **only** "Contents:
+Read and write" access, scoped to **only** this one repository — it can't
+touch anything else in your GitHub account. Exact setup steps:
+
+1. [github.com/settings/tokens?type=beta](https://github.com/settings/tokens?type=beta) → **Generate new token**.
+2. Give it a name, set an expiration.
+3. **Repository access** → "Only select repositories" → this repo.
+4. **Permissions** → Repository permissions → **Contents** → **Read and write**. Leave everything else as "No access".
+5. Generate, copy the token (shown once), paste it into Streamlit secrets as `GITHUB_TOKEN` above.
 
 ## Known limitations & roadmap
 

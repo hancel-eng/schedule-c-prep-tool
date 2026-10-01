@@ -84,21 +84,36 @@ so every module is independently unit-testable (and is: see
    trusted on its own — see the self-teaching section below for how the
    caller verifies it before saving.
 
-6. **`core/spreadsheet_parser.py`** — `SpreadsheetParser`. Client Excel/CSV
+6. **`core/github_profile_sync.py`** — `commit_profile_to_github`. Writes a
+   verified, saved profile straight back to `bank_profiles/` on this repo's
+   `main` branch via the GitHub Contents API, so it survives the next
+   deploy — `core/bank_profiles.py`'s own local save only lasts for the
+   currently-running instance, since Streamlit Community Cloud's filesystem
+   is ephemeral and re-clones the repo from scratch on every deploy/restart.
+   Needs `GITHUB_TOKEN` in the environment, a fine-grained GitHub token
+   scoped to **only** this repository with **only** "Contents: Read and
+   write" permission (see
+   [README.md](README.md#unrecognized-bank-formats) for exact setup steps).
+   Without it, never raises and never blocks the extraction that already
+   succeeded — a learned profile just goes back to working-for-this-
+   instance-only, the same degraded-but-functional state the feature was in
+   before this module existed.
+
+7. **`core/spreadsheet_parser.py`** — `SpreadsheetParser`. Client Excel/CSV
    files vary in whether income is the positive or negative sign
    (`_detect_sign_convention` classifies each sheet as `standard`,
    `inverted`, or `unsigned` and normalizes to the tool-wide convention:
    income positive, expenses negative — the same convention the PDF parser
    uses).
 
-7. **`core/totals_parser.py`** — `TotalsParser`. Maps client-provided
+8. **`core/totals_parser.py`** — `TotalsParser`. Maps client-provided
    year-end totals to Schedule C lines with special-rule flags (vehicle
    mileage vs. actual, the 50% meals limitation, the 1099 threshold, health
    insurance belonging on Schedule 1 not Schedule C, home office). Not
    currently reachable from the UI — see
    [README.md](README.md#known-limitations--roadmap).
 
-8. **`core/tax_categorizer.py`** — `TaxCategorizer`. The keyword dictionary
+9. **`core/tax_categorizer.py`** — `TaxCategorizer`. The keyword dictionary
    (`SCHEDULE_C_CATEGORIES`) and the Non-P&L exclusion patterns
    (`NON_PNL_PATTERNS`), both matched on **word boundaries**, not bare
    substrings — a short/generic keyword like `mobil` (the gas brand) must
@@ -110,7 +125,7 @@ so every module is independently unit-testable (and is: see
    (`custom_rules.json`) take precedence over the built-in dictionary but
    not over Non-P&L detection.
 
-9. **`core/exception_analyzer.py`** — `ExceptionAnalyzer`. Scans every
+10. **`core/exception_analyzer.py`** — `ExceptionAnalyzer`. Scans every
    transaction into review queues: potential personal expense, potential
    fixed asset (over the de minimis threshold, or matching an
    asset-shaped keyword), 1099 accumulation per contractor, unusual/large
@@ -120,13 +135,13 @@ so every module is independently unit-testable (and is: see
    is skipped — this, not category text, is what lets an answered question
    stop regenerating.
 
-10. **`core/vendor_grouping.py`** — `group_potential_personal`. Groups
+11. **`core/vendor_grouping.py`** — `group_potential_personal`. Groups
    personal-expense-review transactions by vendor (P2P payment apps grouped
    by service *and* recipient specifically, so different people paid through
    the same app are never merged) and applies the materiality threshold to
    each group's total, not each individual charge.
 
-11. **`core/question_generator.py`** — `ClientQuestionGenerator`. Builds the
+12. **`core/question_generator.py`** — `ClientQuestionGenerator`. Builds the
    client-facing question list from the exception queues. Every question
    carries `transaction_keys` — a list, even for a single-transaction
    question — back to the exact transaction(s) it concerns (see
@@ -134,7 +149,7 @@ so every module is independently unit-testable (and is: see
    date + payee + amount + source file, since there's no database or
    synthetic id in a stateless single-session app).
 
-12. **`core/answer_applier.py`** — `apply_client_answers`. Applies an
+13. **`core/answer_applier.py`** — `apply_client_answers`. Applies an
    answered question to the transaction list. Answers are a fixed
    vocabulary per question type (`ANSWER_OPTIONS`), never free text, so this
    module never has to guess what an answer meant — an answer outside the
@@ -143,10 +158,10 @@ so every module is independently unit-testable (and is: see
    by hand and changes nothing. Every transaction it touches is stamped
    `client_confirmed=True`.
 
-13. **`core/reconciliation.py`** — `ReconciliationChecker`. See
+14. **`core/reconciliation.py`** — `ReconciliationChecker`. See
     [Reconciliation](#reconciliation).
 
-14. **`core/excel_exporter.py`** — `ExcelWorkpaperExporter`. Builds the
+15. **`core/excel_exporter.py`** — `ExcelWorkpaperExporter`. Builds the
     seven-sheet workbook described in [README.md](README.md#what-it-produces).
 
 ## Confidence states
@@ -415,10 +430,23 @@ it's usable. `BankPDFParser.parse_pdf()` runs an escalation chain instead:
    bank keeps using the LLM path until one that passes exists. A failure
    anywhere in this step is swallowed (never allowed to take down an
    extraction that already succeeded at step 4).
+6. **Persistence** (`core/github_profile_sync.py`) — only attempted once
+   step 5 already saved the profile locally. Commits the same profile
+   straight back to `bank_profiles/` on this repo's `main` branch via the
+   GitHub Contents API, so it survives the *next deploy* — the local save
+   in step 5 alone only lasts for the currently-running instance, since
+   Streamlit Community Cloud's filesystem is ephemeral and starts from a
+   fresh clone of the repo on every deploy/restart. Without this step (no
+   `GITHUB_TOKEN` configured, or the request fails for any reason), the
+   bank still works for the rest of this running instance; it just has to
+   be re-learned — paying the LLM cost again — the next time the app
+   redeploys. Same swallow-and-continue discipline as step 5: a failure
+   here never takes down the extraction itself.
 
 Net effect: a brand-new bank costs a few cents the first time (maybe twice,
 if the first attempt's profile doesn't reproduce cleanly), then $0 forever
-after, with zero code changes required. The sidebar toggle ("Use AI
+after — across every future deploy, not just the current running instance
+— with zero code changes required. The sidebar toggle ("Use AI
 fallback...") and `ANTHROPIC_API_KEY` gate step 4 entirely — with no key
 configured, an unrecognized statement stops after step 3 and is flagged in
 its diagnostics notes for manual review, exactly as before this fallback

@@ -182,3 +182,80 @@ def test_llm_extraction_that_does_not_reconcile_is_not_learned_from(
 
     assert learn_called["count"] == 0
     assert any("did not reconcile" in note for note in result["diagnostics"])
+
+
+# --- Persisting a learned profile back to GitHub, so it survives a deploy --
+
+def test_learning_a_profile_also_attempts_a_github_commit(isolated_bank_profiles, monkeypatch):
+    """A learned profile is only ever useful past the current running
+    instance if it's committed back to the repo -- Streamlit Cloud's
+    filesystem is ephemeral and the local save alone (already covered by
+    test_unrecognized_bank_escalates_to_llm_and_learns_a_reusable_profile)
+    doesn't survive a redeploy."""
+    def fake_extract(raw_bytes, filename, year, categorizer):
+        return _fake_llm_extraction(filename)
+
+    def fake_learn(raw_text, verified_data, filename):
+        from core.bank_learner import build_bank_profile
+        return build_bank_profile({
+            "bank_slug": "fictional_trust_bank",
+            "display_name": "Fictional Trust Bank",
+            "deposit_headers": ["money in"],
+            "withdrawal_headers": ["money out"],
+            "checks_headers": [],
+            "daily_balance_skip_headers": [],
+        })
+
+    github_calls = []
+
+    def fake_commit(profile):
+        github_calls.append(profile.bank_slug)
+        return True
+
+    import core.llm_extractor as llm_extractor_module
+    import core.bank_learner as bank_learner_module
+    import core.github_profile_sync as github_sync_module
+    monkeypatch.setattr(llm_extractor_module, "extract_transactions_llm", fake_extract)
+    monkeypatch.setattr(bank_learner_module, "learn_bank_profile", fake_learn)
+    monkeypatch.setattr(github_sync_module, "commit_profile_to_github", fake_commit)
+
+    parser = BankPDFParser(categorizer=TaxCategorizer(), enable_llm_fallback=True)
+    result = parser.parse_pdf(_pdf_bytes(UNKNOWN_BANK_STATEMENT), "Fictional Trust Bank 01 2025.pdf")
+
+    assert github_calls == ["fictional_trust_bank"]
+    assert any("Committed the learned profile to GitHub" in note for note in result["diagnostics"])
+
+
+def test_github_commit_failure_does_not_break_the_already_successful_extraction(
+    isolated_bank_profiles, monkeypatch
+):
+    """If the GitHub commit fails (no token, rate limit, network error, ...),
+    the extraction that already succeeded must still be returned intact --
+    durability is a bonus, never a requirement."""
+    def fake_extract(raw_bytes, filename, year, categorizer):
+        return _fake_llm_extraction(filename)
+
+    def fake_learn(raw_text, verified_data, filename):
+        from core.bank_learner import build_bank_profile
+        return build_bank_profile({
+            "bank_slug": "fictional_trust_bank",
+            "display_name": "Fictional Trust Bank",
+            "deposit_headers": ["money in"],
+            "withdrawal_headers": ["money out"],
+            "checks_headers": [],
+            "daily_balance_skip_headers": [],
+        })
+
+    import core.llm_extractor as llm_extractor_module
+    import core.bank_learner as bank_learner_module
+    import core.github_profile_sync as github_sync_module
+    monkeypatch.setattr(llm_extractor_module, "extract_transactions_llm", fake_extract)
+    monkeypatch.setattr(bank_learner_module, "learn_bank_profile", fake_learn)
+    monkeypatch.setattr(github_sync_module, "commit_profile_to_github", lambda profile: False)
+
+    parser = BankPDFParser(categorizer=TaxCategorizer(), enable_llm_fallback=True)
+    result = parser.parse_pdf(_pdf_bytes(UNKNOWN_BANK_STATEMENT), "Fictional Trust Bank 01 2025.pdf")
+
+    deposits = sum(t["amount"] for t in result["transactions"] if t["is_deposit"])
+    assert deposits == pytest.approx(5000.0)
+    assert any("Could not commit the learned profile to GitHub" in note for note in result["diagnostics"])

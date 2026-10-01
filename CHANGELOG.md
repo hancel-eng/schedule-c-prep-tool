@@ -8,6 +8,41 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for how the current system works,
 and [README.md](README.md#known-limitations--roadmap) for what's still
 open.
 
+## 2026-10-01 — Learned bank profiles now survive a redeploy
+
+A real client statement from a bank outside Regions/Capital One/Chase was
+tested and came back badly wrong (every number treated as an expense,
+daily balances read as transactions) -- the same symptom class as the
+original Chase bug. Root cause this time: the AI fallback that's supposed
+to catch exactly this case never had a chance to run, most likely because
+no `ANTHROPIC_API_KEY` was configured in that deployment yet (not yet
+confirmed with the actual files).
+
+Investigating that raised a separate, real gap regardless of the immediate
+cause: even when the self-teaching fallback (see the 2026-09-17 entry
+below) *does* learn a new bank successfully, the profile it saves
+(`core/bank_profiles.py`) only lives on the currently-running instance's
+local disk. Streamlit Community Cloud's filesystem is ephemeral and
+re-clones the repo from scratch on every deploy -- so a learned profile
+was quietly being thrown away on the next `git push`, forcing that bank to
+be re-learned (and re-billed) from scratch. Not caught until now because
+no bank had actually gone through the full learn-then-redeploy cycle yet.
+
+Fixed with a new step at the end of the learning pipeline
+(`core/github_profile_sync.py`): once a profile is saved locally, the app
+also commits it straight back to `bank_profiles/` on this repo's `main`
+branch via the GitHub Contents API, using a `GITHUB_TOKEN` scoped to only
+this repository with only "Contents: Read and write" permission. Without
+that token configured, nothing breaks -- the profile still works for the
+rest of the current instance, exactly as before this fix, it just won't
+survive the *next* deploy either. See
+[ARCHITECTURE.md](ARCHITECTURE.md#unrecognized-bank-formats-the-self-teaching-fallback)
+and [README.md](README.md#unrecognized-bank-formats) for setup.
+
+Still open: confirming with the actual failing bank's statements whether
+the root cause really was a missing API key or a genuine extraction bug —
+next step once those files are available.
+
 ## 2026-09-17 — Multiple clients per session, and explicit "Start Processing"
 
 - **Several clients can now be open in the same browser session at once**,

@@ -19,7 +19,7 @@ from theme import CSS, render_progress_steps
 # Bumped on every meaningful change to this file, so whoever is looking at the
 # app can tell which version is running just by glancing at the sidebar --
 # there is no separate deploy/build pipeline that would otherwise show that.
-APP_VERSION = "v8"
+APP_VERSION = "v9"
 
 # Page Configuration
 st.set_page_config(
@@ -61,6 +61,23 @@ def _get_anthropic_api_key() -> str:
 _anthropic_key = _get_anthropic_api_key()
 if _anthropic_key:
     os.environ["ANTHROPIC_API_KEY"] = _anthropic_key
+
+
+def _get_github_token() -> str:
+    """Same "no secrets file at all" guard as _get_app_password(). Checked
+    once at startup, copied into os.environ so
+    core/github_profile_sync.py (framework-agnostic, no Streamlit import)
+    can read it the ordinary way. Scoped to a single repo with
+    Contents: Read and write only -- see README.md for exact setup steps."""
+    try:
+        return st.secrets.get("GITHUB_TOKEN", "") or os.environ.get("GITHUB_TOKEN", "")
+    except FileNotFoundError:
+        return os.environ.get("GITHUB_TOKEN", "")
+
+
+_github_token = _get_github_token()
+if _github_token:
+    os.environ["GITHUB_TOKEN"] = _github_token
 
 
 def check_password() -> bool:
@@ -261,6 +278,16 @@ else:
         "flagged for manual review instead of an AI fallback. See "
         "[.streamlit/secrets.toml.example](https://github.com/hancel-eng/schedule-c-prep-tool/blob/main/.streamlit/secrets.toml.example)."
     )
+
+if enable_llm_fallback:
+    if _github_token:
+        st.sidebar.caption("✓ Learned bank profiles are committed to GitHub -- they survive a redeploy.")
+    else:
+        st.sidebar.caption(
+            "No GITHUB_TOKEN configured -- a learned bank profile works for the rest of this running "
+            "instance, but won't survive the next deploy. See "
+            "[.streamlit/secrets.toml.example](https://github.com/hancel-eng/schedule-c-prep-tool/blob/main/.streamlit/secrets.toml.example)."
+        )
 
 # Custom payee rules a prior session may have saved (core/tax_categorizer.py's
 # TaxCategorizer loads custom_rules.json automatically) still apply here even
