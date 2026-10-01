@@ -74,6 +74,18 @@ h2 { font-size: 20px; margin-top: var(--ts-s6); }
 [data-testid="stSidebar"] .stNumberInput input {
   background: #354B36; border: 1px solid #4A6049; color: #F3F1E9; border-radius: var(--ts-r-sm);
 }
+/* A secondary button ("+ New Client") keeps its light surface/dark-text
+   styling from the generic button rule below -- but `[data-testid="stSidebar"]
+   *` above repaints every descendant it matches, including the <p> Streamlit
+   renders the button's own label text inside, which sits *inside* the
+   button and gets matched directly (inheritance never wins against a rule
+   that targets the element itself, no matter how much weaker that rule
+   looks). Re-asserting the dark color on the label text explicitly, scoped
+   to just the sidebar's secondary buttons, is what actually wins here. */
+[data-testid="stSidebar"] .stButton > button[kind="secondary"],
+[data-testid="stSidebar"] .stButton > button[kind="secondary"] * {
+  color: var(--ts-text);
+}
 
 /* metricas */
 [data-testid="stMetric"] {
