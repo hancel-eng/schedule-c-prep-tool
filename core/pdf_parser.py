@@ -96,6 +96,16 @@ BALANCE_PATTERNS = {
         r"\bwithdrawals?\s+(?:and|&)\s+debits\b",
         r"\b(?:purchases|charges)\s+(?:and|&)\s+(?:adjustments|debits)\b",
         r"\btotal\s+(?:purchases|charges)\b",
+        # A real Chase statement never prints one "Total Withdrawals" line at
+        # all -- it declares withdrawals as 2-3 of its own category totals
+        # instead ("ATM & Debit Card Withdrawals 14 -7,469.62", "Electronic
+        # Withdrawals 6 -4,740.93"), none of which match any pattern above.
+        # Matched here so _capture_balances (below) has something to SUM them
+        # into; without this, total_withdrawals silently stayed $0.00 on
+        # every Chase statement tested, which is what made a fully correct
+        # extraction look like a discrepancy on 12 of 13 real documents.
+        r"\batm\s*(?:&|and)\s*debit\s+card\s+withdrawals\b",
+        r"\belectronic\s+withdrawals\b",
     ],
     # A bank statement's "Withdrawals" summary figure routinely excludes
     # Checks and Fees -- both broken out as their own SUMMARY-block totals
@@ -848,17 +858,32 @@ class BankPDFParser:
         data.transactions = transactions
         return data
 
-    def _capture_balances(self, line_clean: str, data: FinancialDocumentData) -> None:
-        """Record a statement-declared balance or rollup total, if this line is one.
+    # beginning_balance/ending_balance are the SAME true value repeated
+    # verbatim wherever they appear (a running per-page footer, a daily-
+    # balance table) -- first occurrence wins there, and every later match is
+    # a repeat, not new information. total_deposits/total_withdrawals/
+    # total_checks/total_fees are summed instead (see _capture_balances) --
+    # not every bank declares one clean "Total Withdrawals" figure; a real
+    # one (Chase) instead breaks withdrawals into its own category lines
+    # ("ATM & Debit Card Withdrawals", "Electronic Withdrawals"), each its
+    # own declared dollar amount, together making up the true total.
+    _SINGLE_VALUE_BALANCE_FIELDS = {"beginning_balance", "ending_balance"}
 
-        First occurrence wins: banks repeat "Ending Balance" in per-page footers
-        and daily balance tables, and only the account summary value is
-        authoritative.
+    def _capture_balances(self, line_clean: str, data: FinancialDocumentData) -> None:
+        """Records a statement-declared balance or rollup total, if this
+        line is one. See _SINGLE_VALUE_BALANCE_FIELDS above for which fields
+        keep their first value and which accumulate across every matching
+        line -- summing is what generalizes to any bank that reports
+        withdrawals/deposits/fees as several of its own category totals
+        rather than one clean figure, not just Chase specifically (first-
+        occurrence-wins there silently discarded every category after the
+        first, which is what made a fully correct extraction look like a
+        discrepancy on 12 of 13 real Chase statements tested).
         """
         line_lower = line_clean.lower()
 
         for field, patterns in BALANCE_PATTERNS.items():
-            if getattr(data, field):
+            if field in self._SINGLE_VALUE_BALANCE_FIELDS and getattr(data, field):
                 continue
             if not any(re.search(pat, line_lower) for pat in patterns):
                 continue
@@ -869,9 +894,14 @@ class BankPDFParser:
             if not amounts:
                 continue
 
-            value = self._clean_amount(amounts[-1])
-            if value != 0.0:
-                setattr(data, field, abs(value))
+            value = abs(self._clean_amount(amounts[-1]))
+            if value == 0.0:
+                continue
+
+            if field in self._SINGLE_VALUE_BALANCE_FIELDS:
+                setattr(data, field, value)
+            else:
+                setattr(data, field, (getattr(data, field) or 0.0) + value)
 
     # Boundaries where pdfplumber's word extraction (or the source PDF itself)
     # can drop a space that is visually present on the statement:
@@ -1050,47 +1080,65 @@ class BankPDFParser:
         but inline and self-contained, so parse_pdf() can decide on a
         fallback for a single document without importing that module.
 
-        Three tiers, strongest signal first:
-        1. Declared total_deposits/total_withdrawals (BALANCE_PATTERNS
-           matched a "Total Deposits"/"Total Withdrawals"-shaped line) --
-           extracted must match them directly.
-        2. Declared beginning_balance/ending_balance, when (1) found
-           nothing. Some real statements (confirmed on Wells Fargo) print
-           their deposit/withdrawal recap as "Deposits/Additions" and
-           "Withdrawals/Subtractions" with no "Total" prefix -- the exact
-           phrase BALANCE_PATTERNS looks for -- so declared_deposits/
-           declared_withdrawals both silently stay 0.0 even though the
-           statement's own beginning/ending balance *did* get captured.
-           Without this tier, a garbage extraction (confirmed on the same
-           statement: a trailing running-balance column on most transaction
-           lines got read as the transaction amount, inflating one
-           statement's "expenses" past $200,000) fell through to tier 3 and
-           was wrongly treated as reliable purely because *something* got
-           extracted -- the AI fallback never even ran. Checks the
-           statement's own arithmetic instead: beginning + deposits -
-           withdrawals must equal ending.
-        3. Nothing declared at all to check against (truly bare of both
-           totals and running balances) -- weakest fallback, did we extract
-           at least one transaction. Keeps a genuinely-empty-but-fine
-           statement (e.g. zero activity) from being treated as unreliable.
+        Runs every check for which the statement actually declared the
+        figures needed, and requires ALL of them to agree -- not a cascade
+        that stops at the first one with data. A cascade is a real gap: if
+        a bank's declared total_deposits/total_withdrawals happen to be
+        captured but *incomplete* (confirmed on Chase -- see
+        core/pdf_parser.py's BALANCE_PATTERNS/_capture_balances comments),
+        stopping there would never even look at the beginning/ending
+        balance equation, which is the stronger, more universal signal.
+        Two independent checks, both run whenever the data for them exists:
+
+        1. Declared total_deposits/total_withdrawals vs. extracted. Bank-
+           specific wording varies a lot (this is the figure that's
+           repeatedly needed a new BALANCE_PATTERNS phrase per bank), so
+           this check alone has repeatedly been fooled by a statement that
+           declares its withdrawals in category lines this parser doesn't
+           (yet) recognize, leaving declared_withdrawals at $0 or an
+           incomplete partial sum.
+        2. beginning_balance + extracted_deposits - extracted_withdrawals
+           == ending_balance. "Beginning Balance"/"Ending Balance" wording
+           is close to universal across US bank statements, far more so
+           than any particular bank's deposit/withdrawal recap phrasing --
+           this is what actually caught the Wells Fargo running-balance-
+           misread-as-amount bug, and keeps catching it even when check 1
+           can't run at all (that statement declared no clean deposit/
+           withdrawal total either).
+
+        A statement that declares neither falls back to the weakest
+        signal: did we extract at least one transaction. Keeps a
+        genuinely-empty-but-fine statement (e.g. zero activity) from being
+        treated as unreliable.
         """
         extracted_deposits = sum(t.amount for t in doc_data.transactions if t.is_deposit)
         extracted_withdrawals = sum(abs(t.amount) for t in doc_data.transactions if not t.is_deposit)
-        declared_deposits = doc_data.total_deposits or 0.0
-        declared_withdrawals = doc_data.total_withdrawals or 0.0
         tolerance = 0.01
 
-        if declared_deposits or declared_withdrawals:
-            return (abs(extracted_deposits - declared_deposits) <= tolerance and
-                    abs(extracted_withdrawals - declared_withdrawals) <= tolerance)
-
+        declared_deposits = doc_data.total_deposits or 0.0
+        declared_withdrawals = doc_data.total_withdrawals or 0.0
         beginning_balance = doc_data.beginning_balance or 0.0
         ending_balance = doc_data.ending_balance or 0.0
-        if beginning_balance or ending_balance:
-            computed_ending = beginning_balance + extracted_deposits - extracted_withdrawals
-            return abs(computed_ending - ending_balance) <= tolerance
 
-        return len(doc_data.transactions) > 0
+        checks_run = 0
+        checks_passed = 0
+
+        if declared_deposits or declared_withdrawals:
+            checks_run += 1
+            if (abs(extracted_deposits - declared_deposits) <= tolerance and
+                    abs(extracted_withdrawals - declared_withdrawals) <= tolerance):
+                checks_passed += 1
+
+        if beginning_balance or ending_balance:
+            checks_run += 1
+            computed_ending = beginning_balance + extracted_deposits - extracted_withdrawals
+            if abs(computed_ending - ending_balance) <= tolerance:
+                checks_passed += 1
+
+        if checks_run == 0:
+            return len(doc_data.transactions) > 0
+
+        return checks_passed == checks_run
 
     def _sums_match(self, a: FinancialDocumentData, b: FinancialDocumentData,
                      tolerance: float = 0.01) -> bool:

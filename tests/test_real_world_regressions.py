@@ -10,6 +10,7 @@ from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 
 from core.pdf_parser import BankPDFParser, FinancialDocumentData, TransactionItem
+from core.reconciliation import ReconciliationChecker
 from core.tax_categorizer import TaxCategorizer
 
 
@@ -358,3 +359,110 @@ def test_reliability_check_uses_balance_equation_when_no_declared_totals():
         ],
     )
     assert parser._extraction_looks_reliable(correct) is True
+
+
+# --- A bank's declared withdrawals may be split across several category
+# lines, not one clean "Total Withdrawals" -- all of them must be summed,
+# not just the first one matched (a real Chase statement reconciled 1 of 13
+# times before this fix, with the extraction underneath entirely correct) --
+
+def test_withdrawal_category_lines_are_summed_not_first_match_only():
+    """Chase's own CHECKING SUMMARY declares withdrawals as 2-3 separate
+    category totals of its own -- none of them say "Total Withdrawals"."""
+    parser = BankPDFParser()
+    data = FinancialDocumentData()
+    for line in [
+        "Beginning Balance $12,460.77",
+        "Deposits and Additions 9 23,229.77",
+        "Checks Paid 2 -2,700.00",
+        "ATM & Debit Card Withdrawals 44 -8,442.18",
+        "Electronic Withdrawals 10 -16,899.71",
+        "Fees 31 -93.00",
+        "Ending Balance 96 $7,555.65",
+    ]:
+        parser._capture_balances(line, data)
+
+    declared_withdrawals = (data.total_withdrawals or 0.0) + (data.total_checks or 0.0) + (data.total_fees or 0.0)
+    assert declared_withdrawals == pytest.approx(2700.00 + 8442.18 + 16899.71 + 93.00)
+    assert data.total_deposits == pytest.approx(23229.77)
+    assert data.beginning_balance == pytest.approx(12460.77)
+    assert data.ending_balance == pytest.approx(7555.65)
+
+
+def test_withdrawal_category_summing_handles_a_month_with_fewer_categories():
+    """A different month might not print a "Checks Paid" line at all --
+    summing must not assume every category is always present."""
+    parser = BankPDFParser()
+    data = FinancialDocumentData()
+    for line in [
+        "Beginning Balance $43,288.06",
+        "Deposits and Additions 1 6,293.94",
+        "ATM & Debit Card Withdrawals 3 -455.99",
+        "Electronic Withdrawals 3 -3,679.54",
+        "Ending Balance 7 $45,446.47",
+    ]:
+        parser._capture_balances(line, data)
+
+    declared_withdrawals = (data.total_withdrawals or 0.0) + (data.total_checks or 0.0) + (data.total_fees or 0.0)
+    assert declared_withdrawals == pytest.approx(455.99 + 3679.54)
+    assert data.total_checks == 0.0
+
+
+def test_chase_shaped_statement_reconciles_with_correct_extraction():
+    """End-to-end: once withdrawal categories are summed correctly, a
+    correct extraction actually reports "Reconciled" -- this is the real
+    deliverable, not just the intermediate capture being right."""
+    parser = BankPDFParser()
+    data = FinancialDocumentData()
+    for line in [
+        "Beginning Balance $12,460.77",
+        "Deposits and Additions 9 23,229.77",
+        "Checks Paid 2 -2,700.00",
+        "ATM & Debit Card Withdrawals 44 -8,442.18",
+        "Electronic Withdrawals 10 -16,899.71",
+        "Fees 31 -93.00",
+        "Ending Balance 96 $7,555.65",
+    ]:
+        parser._capture_balances(line, data)
+
+    checker = ReconciliationChecker()
+    summary = data.model_dump(exclude={"transactions"})
+    summary["document_type"] = "bank_statement"
+    result = checker.check_document(
+        "Chase Sept 2023.pdf", summary,
+        [{"amount": 23229.77, "is_deposit": True},
+         {"amount": -(2700.00 + 8442.18 + 16899.71 + 93.00), "is_deposit": False}],
+    )
+    assert result["status"] == "Reconciled"
+
+
+def test_extraction_reliability_requires_every_available_check_to_agree():
+    """A cascade that stops at the first check with data is a real gap: a
+    bank's declared totals can be captured but *incomplete* (this is
+    exactly what happened with Chase before the summing fix above), which
+    would pass check 1 on bad data and never even look at check 2."""
+    parser = BankPDFParser()
+
+    # Declared deposits/withdrawals agree with extraction, but the
+    # statement's own balance equation does NOT -- e.g. a second, unrelated
+    # extraction bug dropped a transaction that doesn't affect the declared
+    # deposit/withdrawal totals captured (which, on a real bank, might
+    # themselves be incomplete) but does break the balance equation.
+    inconsistent = FinancialDocumentData(
+        total_deposits=100.0, total_withdrawals=40.0,
+        beginning_balance=1000.0, ending_balance=1200.0,  # implies net +200, not +60
+        transactions=[
+            TransactionItem(date="01/01/2025", payee="A", description="A", amount=100.0,
+                             is_deposit=True, category="x", confidence_state="High Confidence",
+                             confidence_score=0.9, source_file="f.pdf"),
+            TransactionItem(date="01/02/2025", payee="B", description="B", amount=-40.0,
+                             is_deposit=False, category="x", confidence_state="High Confidence",
+                             confidence_score=0.9, source_file="f.pdf"),
+        ],
+    )
+    assert parser._extraction_looks_reliable(inconsistent) is False
+
+    # Same transactions, but now the balance equation also agrees -- both
+    # available checks pass, so this one is reliable.
+    consistent = inconsistent.model_copy(update={"ending_balance": 1060.0})
+    assert parser._extraction_looks_reliable(consistent) is True

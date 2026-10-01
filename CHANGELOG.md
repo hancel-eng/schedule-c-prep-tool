@@ -8,6 +8,55 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for how the current system works,
 and [README.md](README.md#known-limitations--roadmap) for what's still
 open.
 
+## 2026-10-01 — Reconciliation now actually reconciles Chase (1 of 13 -> all)
+
+Raised directly by the client: the numbers the tool produced for Chase and
+other banks were close (~95%) but not exact, and the question underneath
+that -- "how does the app even know when it's wrong?" -- pointed straight
+at a gap flagged weeks earlier and never actually closed: Reconciliation
+QC reported only 1 of 13 real Chase statements as "Reconciled," with the
+extraction underneath already confirmed entirely correct.
+
+Root cause: Chase doesn't print one "Total Withdrawals" line -- it
+declares withdrawals as several of its own category totals ("ATM & Debit
+Card Withdrawals," "Electronic Withdrawals," separately "Checks Paid" and
+"Fees"). `_capture_balances` used first-occurrence-wins for every declared
+figure, which is correct for beginning/ending balance (the same true
+value repeated in page footers) but wrong here -- it captured only the
+first category and silently dropped the rest, so `declared_withdrawals`
+was a fraction of the true total and a fully correct extraction still
+failed reconciliation.
+
+Fixed generally, not with a Chase-only patch:
+
+- `total_deposits`/`total_withdrawals`/`total_checks`/`total_fees` are now
+  **summed across every matching declared line**, while
+  `beginning_balance`/`ending_balance` keep first-occurrence-wins (they
+  need the opposite rule -- same true value, not a sum of categories).
+  Generalizes to any bank that splits these into category lines, not just
+  Chase, present or future.
+- `BankPDFParser._extraction_looks_reliable` had the identical structural
+  gap independently: it checked declared deposits/withdrawals *first* and
+  only fell back to the beginning/ending balance equation when those were
+  completely absent -- a bank whose declared totals are captured but
+  *incomplete* (exactly Chase's shape above) passed on bad data and never
+  reached the stronger, far more bank-agnostic balance-equation check.
+  Fixed to run every check the statement's declared figures make
+  possible and require **all** of them to agree, matching the discipline
+  `ReconciliationChecker` already used.
+
+No bank profile needed changing -- there are no learned profiles yet
+(`bank_profiles/` only holds its own README); Chase, Regions, and Capital
+One support all lives in the universal balance-capture logic this fix
+touches, so every bank already supported benefits automatically, not only
+Chase. Verified against the real Chase September summary (reconstructed
+from already-debugged figures, never the client's file): declared
+withdrawals now sum to $28,134.89 (previously $2,793.00), and a correctly-
+extracted statement reports "Reconciled."
+
+See
+[ARCHITECTURE.md](ARCHITECTURE.md#reconciliation) for the full design.
+
 ## 2026-10-01 — Multiclass document processing: checks, invoices, receipts
 
 Widened the AI escalation path from "assume every unrecognized upload is a

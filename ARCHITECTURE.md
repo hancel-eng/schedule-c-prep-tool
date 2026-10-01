@@ -210,7 +210,8 @@ returned/reversed deposits.
 ## Reconciliation
 
 `ReconciliationChecker.check_document` runs two independent checks per
-statement:
+statement, and requires **both** to agree — not "the first one that has
+data," which used to be a real gap (see below):
 
 1. **Statement integrity** — does the statement's own declared arithmetic
    hold (`beginning + deposits − withdrawals == ending`)? A failure here
@@ -221,6 +222,51 @@ statement:
 
 A document that declares no balances is reported **Not Reconcilable**,
 never treated as a pass.
+
+### Not every bank declares one clean "Total Withdrawals" line
+
+Check 2 depends on `total_deposits`/`total_withdrawals` actually being
+captured by `_capture_balances` (`core/pdf_parser.py`) — and a real Chase
+statement doesn't print a single withdrawals total at all. It breaks
+withdrawals into its own category lines instead: "ATM & Debit Card
+Withdrawals 44 -8,442.18", "Electronic Withdrawals 10 -16,899.71", and
+separately "Checks Paid 2 -2,700.00" / "Fees 31 -93.00". The original
+`_capture_balances` used first-occurrence-wins for every declared figure
+(correct for `beginning_balance`/`ending_balance`, which genuinely repeat
+the same true value in per-page footers) — applied to withdrawals, it
+captured only the first category line and silently discarded the rest,
+leaving `declared_withdrawals` at a small fraction of the true total. The
+extraction underneath was entirely correct; check 2 still failed, because
+the number it was compared against was wrong. Confirmed on a real 13-
+statement Chase engagement: 1 of 13 reported "Reconciled."
+
+Fixed by splitting `_capture_balances`'s semantics in two:
+`beginning_balance`/`ending_balance` keep first-occurrence-wins (they're
+one true value repeated verbatim); `total_deposits`/`total_withdrawals`/
+`total_checks`/`total_fees` are **summed across every matching line**
+instead (`BankPDFParser._SINGLE_VALUE_BALANCE_FIELDS` marks which fields
+get which treatment). This isn't a Chase-specific patch — it generalizes
+to any bank that reports deposits, withdrawals, checks, or fees as
+several of its own category totals rather than one clean figure, present
+or future, without needing a new special case added by hand each time.
+
+### Both checks must agree, not just the first one with data
+
+`BankPDFParser._extraction_looks_reliable` (the inline self-check that
+decides whether to escalate an unrecognized document to AI — see
+[Unrecognized documents](#unrecognized-documents-the-multiclass-self-teaching-fallback))
+had the same structural gap, independently of the Chase bug above: it
+checked declared deposits/withdrawals *first*, and only fell back to the
+beginning/ending balance equation when those were completely absent (both
+exactly `0.0`). A bank whose declared totals are captured but
+*incomplete* — exactly Chase's shape before the fix above — would pass
+that first check on bad data and never even reach the balance-equation
+check, which is the stronger, far more universal signal (`beginning
+balance`/`ending balance` wording barely varies bank to bank; deposit/
+withdrawal recap wording is what keeps needing a new pattern). Fixed the
+same way `ReconciliationChecker` already worked: run every check the
+statement's declared figures make possible, and require **all** of them
+to pass, not just the first one that happened to have data.
 
 Credit card statements need a different comparison axis than bank
 statements: `is_deposit` reflects the *business's* cash flow (money into vs.
