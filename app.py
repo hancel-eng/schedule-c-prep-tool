@@ -21,7 +21,7 @@ from theme import CSS, render_progress_steps
 # Bumped on every meaningful change to this file, so whoever is looking at the
 # app can tell which version is running just by glancing at the sidebar --
 # there is no separate deploy/build pipeline that would otherwise show that.
-APP_VERSION = "v12"
+APP_VERSION = "v13"
 
 
 def _running_commit() -> str:
@@ -966,8 +966,8 @@ if uploaded_files or has_existing_data:
     # by default so it never competes with the 3 tabs above for attention.
     # ----------------------------------------------------
     with st.expander("View audit detail (line items, per-file reconciliation, large transactions)"):
-        audit_tab1, audit_tab2, audit_tab3 = st.tabs([
-            "All Line Items", "Reconciliation QC", "Unusual / Large Transactions"
+        audit_tab1, audit_tab2, audit_tab3, audit_tab4 = st.tabs([
+            "All Line Items", "Reconciliation QC", "Unusual / Large Transactions", "Processing Log"
         ])
 
         with audit_tab1:
@@ -1023,6 +1023,30 @@ if uploaded_files or has_existing_data:
                 st.dataframe(pd.DataFrame(large_txs)[['date', 'payee', 'amount', 'reason']], use_container_width=True)
             else:
                 st.caption("None this run.")
+
+        with audit_tab4:
+            st.caption(
+                "Exactly what each uploaded file was parsed as and why -- including "
+                "whether AI document processing ran, and the real error text if it "
+                "failed. This was previously computed but never shown anywhere."
+            )
+            if diagnostics_log:
+                for entry in diagnostics_log:
+                    details = entry.get("details") or []
+                    flagged = any(
+                        kw in str(line).lower()
+                        for line in details
+                        for kw in ("failed", "not available", "could not", "review by hand", "did not pass")
+                    )
+                    with st.expander(
+                        f"{'⚠️ ' if flagged else ''}{entry['file']} — {entry['type']} "
+                        f"({entry['count']} item(s))",
+                        expanded=flagged,
+                    ):
+                        for line in details:
+                            st.write(f"- {line}")
+            else:
+                st.info("No files processed yet this run.")
 
     # ----------------------------------------------------
     # EXPORT SECTION

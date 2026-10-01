@@ -8,6 +8,45 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for how the current system works,
 and [README.md](README.md#known-limitations--roadmap) for what's still
 open.
 
+## 2026-10-01 — Two confirmed defects: credit-card routing skipped all verification, and diagnostics were never shown
+
+After the model switch below still didn't change the client's live Wells
+Fargo results, reproduced the rule-based extraction locally against the
+real 12 statements (no API calls) to get hard evidence instead of more
+guessing:
+
+- Confirmed all 12 correctly fail `_extraction_looks_reliable` and are
+  correctly routed to AI escalation -- the routing logic itself is not at
+  fault for this specific file set.
+- Found, while reading `parse_pdf`, a real structural defect unrelated to
+  Wells Fargo specifically: any filename containing the bare word "card"
+  was routed to `_parse_credit_card_pdf` -- a parser hardcoded to one
+  bank ("Capital One Business Spark") -- with **no reliability check and
+  no AI escalation at all**. A statement from any other bank whose
+  filename happens to contain "card" (e.g. "...Debit Card
+  Statement.pdf") would be silently misparsed with zero safety net.
+  Fixed: every non-P&L document now goes through the same
+  reliability-check-then-escalate path regardless of which specialized
+  parser produced the first attempt.
+- Found a second, more consequential defect: `app.py` computed
+  `diagnostics_log` (filename, document type, and every note
+  `core/pdf_parser.py` attaches -- including the literal exception text
+  when `classify_and_extract` fails) but never rendered it anywhere.
+  Every real error message explaining an AI escalation failure has been
+  silently discarded since the multiclass IDP system shipped -- which
+  means "no error shown, just wrong numbers" was expected behavior, not
+  evidence the AI path wasn't running. Fixed: added a "Processing Log"
+  tab (4th tab inside "View audit detail") that lists every uploaded
+  file's diagnostics notes verbatim, auto-expanded when a note contains
+  language suggesting a failure.
+
+Neither of these is confirmed as the explanation for the Wells Fargo
+numbers specifically -- the first doesn't apply to these filenames, and
+the second is a visibility gap, not a logic bug in the extraction itself.
+But the Processing Log tab is what should finally show the real failure
+reason on the next test, instead of another round of inference from
+documentation.
+
 ## 2026-10-01 — Wells Fargo escalation still returning stale numbers: switch IDP model to gpt-6-astra
 
 After the Chase reconciliation fix and the OpenAI migration both shipped,

@@ -197,17 +197,28 @@ class BankPDFParser:
         statement_end_month = self._extract_statement_end_month_from_filename(filename)
         raw_bytes = self._read_all_bytes(file_path_or_bytes)
 
-        # Detect Document Category
+        # Detect Document Category. P&L reports are a genuinely different
+        # shape (reconciled against the client's own totals, not an internal
+        # balance chain) and are routed separately on purpose. Everything
+        # else -- including what used to be routed straight to the
+        # Capital-One-only credit card parser with no safety net at all --
+        # now goes through the SAME reliability check and, when it fails,
+        # the SAME AI escalation. No document category is exempt anymore:
+        # that filename-based routing bypassing verification entirely (a
+        # statement merely named with the word "card" skipped both the
+        # reconciliation check and the AI fallback) was a confirmed defect,
+        # independent of whatever else turns out to be wrong.
         is_pnl = "p & l" in filename.lower() or "pnl" in filename.lower() or "profit" in filename.lower()
         is_credit_card = any(kw in filename.lower() for kw in ["capital one", "spark", "card", "chase card", "amex", "citi"])
 
         idp_result: Optional[Dict[str, Any]] = None
         if is_pnl:
             doc_data = self._parse_pnl_report(io.BytesIO(raw_bytes), filename, statement_year)
-        elif is_credit_card:
-            doc_data = self._parse_credit_card_pdf(io.BytesIO(raw_bytes), filename, statement_year, statement_end_month)
         else:
-            doc_data = self._parse_general_or_scanned_pdf(io.BytesIO(raw_bytes), filename, statement_year, statement_end_month)
+            if is_credit_card:
+                doc_data = self._parse_credit_card_pdf(io.BytesIO(raw_bytes), filename, statement_year, statement_end_month)
+            else:
+                doc_data = self._parse_general_or_scanned_pdf(io.BytesIO(raw_bytes), filename, statement_year, statement_end_month)
             if self.enable_llm_fallback and not self._extraction_looks_reliable(doc_data):
                 doc_data, idp_result = self._recover_unrecognized_bank(
                     raw_bytes, filename, statement_year, statement_end_month, doc_data
