@@ -29,7 +29,7 @@ import json
 import os
 from typing import Any, Dict, List, Optional
 
-LLM_MODEL = "gpt-6-luna"
+LLM_MODEL = "gpt-6-astra"
 
 SYSTEM_PROMPT = """You are an expert system in Multiclass Intelligent \
 Document Processing (IDP) and Core Financial Auditing. Analyze the \

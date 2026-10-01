@@ -8,6 +8,31 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for how the current system works,
 and [README.md](README.md#known-limitations--roadmap) for what's still
 open.
 
+## 2026-10-01 — Wells Fargo escalation still returning stale numbers: switch IDP model to gpt-6-astra
+
+After the Chase reconciliation fix and the OpenAI migration both shipped,
+the client re-tested real Wells Fargo statements with a live OpenAI key
+and got "exactly the same numbers" as before any of it -- meaning the AI
+escalation path in `core/idp_extractor.py` was never actually succeeding;
+`_recover_unrecognized_bank`'s existing `except Exception` was silently
+catching a failure and falling back to the known-bad rule-based
+extraction, which looks identical to "nothing changed."
+
+Root cause suspected (not yet confirmed against a live error message):
+`classify_and_extract` sent the PDF as an `input_file` content part to
+`gpt-6-luna`, OpenAI's cheapest model, picked purely for cost (see the
+2026-xx-xx OpenAI migration entry below). OpenAI's own model and PDF-input
+documentation never confirms `gpt-6-luna` supports file/PDF input --
+every official PDF code example uses `gpt-6-astra` instead. `gpt-6-luna`
+is still correct and unchanged for `core/bank_learner.py`'s profile
+-learning call, which only ever sends plain text, never a file.
+
+Fixed by switching `core/idp_extractor.py`'s `LLM_MODEL` to `gpt-6-astra`
+for the file-carrying classify/extract call. Still asked the client for
+the exact diagnostics text from their next test run, since this is a
+documentation-inference fix, not one confirmed against a real failing
+request.
+
 ## 2026-10-01 — Reconciliation now actually reconciles Chase (1 of 13 -> all)
 
 Raised directly by the client: the numbers the tool produced for Chase and

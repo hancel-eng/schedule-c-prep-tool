@@ -40,7 +40,7 @@ def test_classify_and_extract_uses_mocked_client(monkeypatch):
 
     class FakeResponses:
         def create(self, **kwargs):
-            assert kwargs["model"] == "gpt-6-luna"
+            assert kwargs["model"] == "gpt-6-astra"
             assert kwargs["text"]["format"]["name"] == "classify_and_extract_document"
             assert kwargs["text"]["format"]["strict"] is True
             content = kwargs["input"][0]["content"]
