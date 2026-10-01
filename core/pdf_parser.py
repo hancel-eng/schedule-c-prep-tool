@@ -152,7 +152,7 @@ class BankPDFParser:
         # _recover_unrecognized_bank(). Off by default has no cost either
         # way (the LLM path is only ever reached when the rules engine
         # already failed its own self-check), but callers that want to
-        # guarantee zero API spend (no ANTHROPIC_API_KEY configured, or a
+        # guarantee zero API spend (no OPENAI_API_KEY configured, or a
         # deliberate cost-control choice) can disable it here.
         self.enable_llm_fallback = enable_llm_fallback
 

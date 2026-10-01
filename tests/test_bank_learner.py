@@ -1,6 +1,8 @@
 """Unit tests for the bank-profile-learning path. Never calls the real
-Anthropic API -- see tests/test_llm_extractor.py for the same mocking
+OpenAI API -- see tests/test_llm_extractor.py for the same mocking
 approach."""
+import json
+
 import pytest
 
 from core.bank_learner import build_bank_profile, learn_bank_profile
@@ -36,40 +38,38 @@ def test_build_bank_profile_returns_none_for_empty_slug():
 
 
 def test_learn_bank_profile_returns_none_without_api_key(monkeypatch):
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     result = learn_bank_profile("raw text", _fake_verified_data(), "statement.pdf")
     assert result is None
 
 
 def test_learn_bank_profile_uses_mocked_client(monkeypatch):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-fake-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake-key")
 
-    class FakeToolUseBlock:
-        type = "tool_use"
-        input = {
-            "bank_slug": "wells_fargo",
-            "display_name": "Wells Fargo",
-            "deposit_headers": ["deposits and other credits"],
-            "withdrawal_headers": ["withdrawals and other debits"],
-            "checks_headers": ["checks paid"],
-            "daily_balance_skip_headers": ["daily ledger balance"],
-        }
+    fake_payload = {
+        "bank_slug": "wells_fargo",
+        "display_name": "Wells Fargo",
+        "deposit_headers": ["deposits and other credits"],
+        "withdrawal_headers": ["withdrawals and other debits"],
+        "checks_headers": ["checks paid"],
+        "daily_balance_skip_headers": ["daily ledger balance"],
+    }
 
     class FakeResponse:
-        content = [FakeToolUseBlock()]
+        output_text = json.dumps(fake_payload)
 
-    class FakeMessages:
+    class FakeResponses:
         def create(self, **kwargs):
-            assert kwargs["tools"][0]["name"] == "record_bank_profile"
+            assert kwargs["text"]["format"]["name"] == "record_bank_profile"
             return FakeResponse()
 
-    class FakeAnthropicClient:
+    class FakeOpenAIClient:
         def __init__(self, api_key=None):
-            self.messages = FakeMessages()
+            self.responses = FakeResponses()
 
     import sys
-    fake_anthropic_module = type("FakeAnthropicModule", (), {"Anthropic": FakeAnthropicClient})
-    monkeypatch.setitem(sys.modules, "anthropic", fake_anthropic_module)
+    fake_openai_module = type("FakeOpenAIModule", (), {"OpenAI": FakeOpenAIClient})
+    monkeypatch.setitem(sys.modules, "openai", fake_openai_module)
 
     profile = learn_bank_profile("raw statement text", _fake_verified_data(), "statement.pdf")
     assert profile is not None
@@ -77,18 +77,39 @@ def test_learn_bank_profile_uses_mocked_client(monkeypatch):
 
 
 def test_learn_bank_profile_returns_none_when_client_raises(monkeypatch):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-fake-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake-key")
 
-    class FakeMessages:
+    class FakeResponses:
         def create(self, **kwargs):
             raise RuntimeError("network error")
 
-    class FakeAnthropicClient:
+    class FakeOpenAIClient:
         def __init__(self, api_key=None):
-            self.messages = FakeMessages()
+            self.responses = FakeResponses()
 
     import sys
-    fake_anthropic_module = type("FakeAnthropicModule", (), {"Anthropic": FakeAnthropicClient})
-    monkeypatch.setitem(sys.modules, "anthropic", fake_anthropic_module)
+    fake_openai_module = type("FakeOpenAIModule", (), {"OpenAI": FakeOpenAIClient})
+    monkeypatch.setitem(sys.modules, "openai", fake_openai_module)
+
+    assert learn_bank_profile("raw text", _fake_verified_data(), "statement.pdf") is None
+
+
+def test_learn_bank_profile_returns_none_on_malformed_json(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake-key")
+
+    class FakeResponse:
+        output_text = "{not valid json"
+
+    class FakeResponses:
+        def create(self, **kwargs):
+            return FakeResponse()
+
+    class FakeOpenAIClient:
+        def __init__(self, api_key=None):
+            self.responses = FakeResponses()
+
+    import sys
+    fake_openai_module = type("FakeOpenAIModule", (), {"OpenAI": FakeOpenAIClient})
+    monkeypatch.setitem(sys.modules, "openai", fake_openai_module)
 
     assert learn_bank_profile("raw text", _fake_verified_data(), "statement.pdf") is None

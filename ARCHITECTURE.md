@@ -69,19 +69,19 @@ so every module is independently unit-testable (and is: see
 
 4. **`core/llm_extractor.py`** — `extract_transactions_llm`. The paid
    escalation path for a statement `pdf_parser.py`'s rules don't recognize
-   at all. Sends the PDF to Claude for a literal transcription only (never
-   categorization) via a `strict: true` tool call with a fixed JSON schema,
-   so the result is exactly as typed and shaped as a rule-based extraction
-   — every transcribed transaction still goes through the ordinary
-   `TaxCategorizer.categorize_transaction()` call. Needs
-   `ANTHROPIC_API_KEY` in the environment (see
+   at all. Sends the PDF to OpenAI (Responses API) for a literal
+   transcription only (never categorization) via a `strict: true`
+   Structured Outputs JSON schema, so the result is exactly as typed and
+   shaped as a rule-based extraction — every transcribed transaction still
+   goes through the ordinary `TaxCategorizer.categorize_transaction()`
+   call. Needs `OPENAI_API_KEY` in the environment (see
    [README.md](README.md#unrecognized-bank-formats)); a missing key or
    package raises a clean, catchable `RuntimeError`, not a crash.
 
-5. **`core/bank_learner.py`** — `learn_bank_profile`. Asks Claude to name
-   the section-header phrases in a statement `llm_extractor.py` already
-   transcribed successfully, returning a candidate `BankProfile`. Never
-   trusted on its own — see the self-teaching section below for how the
+5. **`core/bank_learner.py`** — `learn_bank_profile`. Asks the same model
+   to name the section-header phrases in a statement `llm_extractor.py`
+   already transcribed successfully, returning a candidate `BankProfile`.
+   Never trusted on its own — see the self-teaching section below for how the
    caller verifies it before saving.
 
 6. **`core/github_profile_sync.py`** — `commit_profile_to_github`. Writes a
@@ -411,20 +411,21 @@ it's usable. `BankPDFParser.parse_pdf()` runs an escalation chain instead:
    the same rules engine (`_parse_general_or_scanned_pdf(..., profile=...)`
    — additive, not a separate code path) until one passes the same
    self-check.
-4. **LLM fallback** (`core/llm_extractor.py`, a few cents, only reached if
-   1–3 all failed) — Claude transcribes the PDF literally (date, payee,
+4. **AI fallback** (`core/llm_extractor.py`, a few cents, only reached if
+   1–3 all failed) — OpenAI transcribes the PDF literally (date, payee,
    amount, direction, plus the statement's own declared totals) via a
-   `strict: true` tool call. The transcribed transactions still go through
-   the ordinary rule-based `TaxCategorizer` — an LLM is used for extraction
-   only, never for deciding a tax category. The result is self-checked the
-   same way (step 2) against the totals it *also* transcribed: if what was
-   "read" doesn't sum to what the statement says it should, that surfaces
-   as a reconciliation problem, never a silently wrong number.
+   `strict: true` Structured Outputs JSON schema. The transcribed
+   transactions still go through the ordinary rule-based `TaxCategorizer`
+   — an AI model is used for extraction only, never for deciding a tax
+   category. The result is self-checked the same way (step 2) against the
+   totals it *also* transcribed: if what was "read" doesn't sum to what
+   the statement says it should, that surfaces as a reconciliation
+   problem, never a silently wrong number.
 5. **Learning** (`core/bank_learner.py`) — only attempted once step 4
-   already passed its self-check. Asks Claude to name this bank's
+   already passed its self-check. Asks the same model to name this bank's
    section-header phrases, then re-runs the rules engine with that
    candidate profile against the *same* document and compares the result
-   to the LLM's own verified numbers. Only a profile that reproduces them
+   to the AI's own verified numbers. Only a profile that reproduces them
    exactly is saved to `bank_profiles/`; the app never trusts an unverified
    profile, and a profile that fails this check is simply discarded — that
    bank keeps using the LLM path until one that passes exists. A failure
@@ -447,7 +448,7 @@ Net effect: a brand-new bank costs a few cents the first time (maybe twice,
 if the first attempt's profile doesn't reproduce cleanly), then $0 forever
 after — across every future deploy, not just the current running instance
 — with zero code changes required. The sidebar toggle ("Use AI
-fallback...") and `ANTHROPIC_API_KEY` gate step 4 entirely — with no key
+fallback...") and `OPENAI_API_KEY` gate step 4 entirely — with no key
 configured, an unrecognized statement stops after step 3 and is flagged in
 its diagnostics notes for manual review, exactly as before this fallback
 existed; nothing about a recognized bank's behavior changes either way.

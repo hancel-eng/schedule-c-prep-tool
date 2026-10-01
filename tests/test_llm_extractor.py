@@ -1,9 +1,11 @@
-"""Unit tests for the LLM fallback extraction path. Never calls the real
-Anthropic API -- extract_transactions_llm's own API-calling code is
-exercised via a mocked client (monkeypatched `anthropic` module), and
+"""Unit tests for the AI fallback extraction path. Never calls the real
+OpenAI API -- extract_transactions_llm's own API-calling code is
+exercised via a mocked client (monkeypatched `openai` module), and
 build_financial_document_data (the part that actually matters for
 correctness -- mapping a structured payload into TransactionItem/
 FinancialDocumentData) is tested directly against a fake payload."""
+import json
+
 import pytest
 
 from core.llm_extractor import build_financial_document_data, extract_transactions_llm
@@ -32,7 +34,7 @@ def test_build_financial_document_data_maps_payload_to_transactions():
     assert wd.amount == pytest.approx(-250.00)  # withdrawals are stored negative, same as every rule-based strategy
     assert data.total_deposits == pytest.approx(6293.94)
     assert data.total_withdrawals == pytest.approx(250.00)
-    assert data.bank_name == "Unrecognized format (LLM fallback)"
+    assert data.bank_name == "Unrecognized format (AI fallback)"
 
 
 def test_build_financial_document_data_handles_null_declared_figures():
@@ -49,50 +51,69 @@ def test_build_financial_document_data_handles_null_declared_figures():
 
 
 def test_extract_transactions_llm_raises_clean_error_without_api_key(monkeypatch):
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY"):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    with pytest.raises(RuntimeError, match="OPENAI_API_KEY"):
         extract_transactions_llm(b"%PDF-fake", "statement.pdf", 2025, TaxCategorizer())
 
 
 def test_extract_transactions_llm_uses_mocked_client_and_maps_result(monkeypatch):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-fake-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake-key")
 
-    class FakeToolUseBlock:
-        type = "tool_use"
-        input = {
-            "transactions": [
-                {"date": "01/30", "payee": "Deposit", "amount": 100.0, "is_deposit": True},
-            ],
-            "declared": {
-                "beginning_balance": 0.0, "ending_balance": 100.0,
-                "total_deposits": 100.0, "total_withdrawals": 0.0,
-            },
-        }
+    fake_payload = {
+        "transactions": [
+            {"date": "01/30", "payee": "Deposit", "amount": 100.0, "is_deposit": True},
+        ],
+        "declared": {
+            "beginning_balance": 0.0, "ending_balance": 100.0,
+            "total_deposits": 100.0, "total_withdrawals": 0.0,
+        },
+    }
 
     class FakeResponse:
-        content = [FakeToolUseBlock()]
+        output_text = json.dumps(fake_payload)
 
-    class FakeMessages:
+    class FakeResponses:
         def create(self, **kwargs):
             # Confirms the call shape without depending on real network access.
-            assert kwargs["model"] == "claude-sonnet-5"
-            assert kwargs["tools"][0]["name"] == "record_statement_extraction"
-            assert kwargs["tools"][0]["strict"] is True
-            assert kwargs["messages"][0]["content"][0]["type"] == "document"
+            assert kwargs["model"] == "gpt-6-luna"
+            assert kwargs["text"]["format"]["name"] == "record_statement_extraction"
+            assert kwargs["text"]["format"]["strict"] is True
+            content = kwargs["input"][0]["content"]
+            assert content[0]["type"] == "input_file"
+            assert content[0]["file_data"].startswith("data:application/pdf;base64,")
             return FakeResponse()
 
-    class FakeAnthropicClient:
+    class FakeOpenAIClient:
         def __init__(self, api_key=None):
-            self.messages = FakeMessages()
-
-    import core.llm_extractor as llm_extractor
-    fake_anthropic_module = type("FakeAnthropicModule", (), {"Anthropic": FakeAnthropicClient})
-    monkeypatch.setattr(llm_extractor, "_get_api_key", lambda: "sk-ant-test-fake-key")
+            self.responses = FakeResponses()
 
     import sys
-    monkeypatch.setitem(sys.modules, "anthropic", fake_anthropic_module)
+    fake_openai_module = type("FakeOpenAIModule", (), {"OpenAI": FakeOpenAIClient})
+    monkeypatch.setitem(sys.modules, "openai", fake_openai_module)
 
     data = extract_transactions_llm(b"%PDF-fake", "statement.pdf", 2025, TaxCategorizer())
     assert len(data.transactions) == 1
     assert data.transactions[0].amount == pytest.approx(100.0)
     assert data.total_deposits == pytest.approx(100.0)
+
+
+def test_extract_transactions_llm_raises_when_output_is_empty(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake-key")
+
+    class FakeResponse:
+        output_text = ""
+
+    class FakeResponses:
+        def create(self, **kwargs):
+            return FakeResponse()
+
+    class FakeOpenAIClient:
+        def __init__(self, api_key=None):
+            self.responses = FakeResponses()
+
+    import sys
+    fake_openai_module = type("FakeOpenAIModule", (), {"OpenAI": FakeOpenAIClient})
+    monkeypatch.setitem(sys.modules, "openai", fake_openai_module)
+
+    with pytest.raises(RuntimeError, match="did not return a structured extraction"):
+        extract_transactions_llm(b"%PDF-fake", "statement.pdf", 2025, TaxCategorizer())

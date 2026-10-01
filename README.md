@@ -186,7 +186,7 @@ client's results past closing the tab, download its Excel workpaper first.
   category.
 - **Statements are read by deterministic rules, not AI, by default.**
   Every result can be traced back to exactly why the tool made that call.
-  AI (Claude) only ever gets involved as a fallback for a bank the tool
+  AI (OpenAI) only ever gets involved as a fallback for a bank the tool
   has genuinely never seen before, and even then only to transcribe what's
   printed — never to decide a tax category or a dollar total, and never
   for a bank already recognized. See
@@ -244,9 +244,9 @@ That's no longer true. When a statement's format doesn't match any bank the
 tool already knows, it automatically:
 
 1. Tries every bank format it has already learned (still free, instant).
-2. If none match, asks Claude (Anthropic's AI) to read that one statement
-   and transcribe every transaction — costs a few cents, and only ever
-   happens for a genuinely new bank, never for one already recognized.
+2. If none match, asks OpenAI's AI to read that one statement and
+   transcribe every transaction — costs a few cents, and only ever happens
+   for a genuinely new bank, never for one already recognized.
 3. If that reads correctly (double-checked against the statement's own
    declared totals — see
    [ARCHITECTURE.md](ARCHITECTURE.md#unrecognized-bank-formats-the-self-teaching-fallback)
@@ -254,12 +254,12 @@ tool already knows, it automatically:
    saves it, so **every statement from that bank after the first is free**
    — no AI, no manual fix, no waiting on a developer.
 
-**To turn this on**, add an Anthropic API key to Streamlit secrets:
+**To turn this on**, add an OpenAI API key to Streamlit secrets:
 
 ```toml
 # .streamlit/secrets.toml (locally) or the app's Settings -> Secrets (on
 # Streamlit Community Cloud)
-ANTHROPIC_API_KEY = "sk-ant-..."
+OPENAI_API_KEY = "sk-..."
 ```
 
 See [.streamlit/secrets.toml.example](.streamlit/secrets.toml.example).

@@ -19,7 +19,7 @@ from theme import CSS, render_progress_steps
 # Bumped on every meaningful change to this file, so whoever is looking at the
 # app can tell which version is running just by glancing at the sidebar --
 # there is no separate deploy/build pipeline that would otherwise show that.
-APP_VERSION = "v9"
+APP_VERSION = "v10"
 
 # Page Configuration
 st.set_page_config(
@@ -46,21 +46,21 @@ def _get_app_password() -> str:
         return ""
 
 
-def _get_anthropic_api_key() -> str:
+def _get_openai_api_key() -> str:
     """Same "no secrets file at all" guard as _get_app_password(). Checked
     once at startup below, which also copies it into os.environ so
     core/llm_extractor.py and core/bank_learner.py -- both framework-
     agnostic, no Streamlit import -- can read it the ordinary way any
-    Anthropic SDK code does."""
+    OpenAI SDK code does."""
     try:
-        return st.secrets.get("ANTHROPIC_API_KEY", "") or os.environ.get("ANTHROPIC_API_KEY", "")
+        return st.secrets.get("OPENAI_API_KEY", "") or os.environ.get("OPENAI_API_KEY", "")
     except FileNotFoundError:
-        return os.environ.get("ANTHROPIC_API_KEY", "")
+        return os.environ.get("OPENAI_API_KEY", "")
 
 
-_anthropic_key = _get_anthropic_api_key()
-if _anthropic_key:
-    os.environ["ANTHROPIC_API_KEY"] = _anthropic_key
+_openai_key = _get_openai_api_key()
+if _openai_key:
+    os.environ["OPENAI_API_KEY"] = _openai_key
 
 
 def _get_github_token() -> str:
@@ -262,7 +262,7 @@ materiality_threshold = st.sidebar.number_input(
 
 st.sidebar.markdown("---")
 st.sidebar.header("Unrecognized Statement Format")
-if _anthropic_key:
+if _openai_key:
     enable_llm_fallback = st.sidebar.checkbox(
         "Use AI fallback for statements the rule-based parser can't read", value=True,
         help="Only used when a statement's own section headers don't match any bank "
@@ -274,7 +274,7 @@ if _anthropic_key:
 else:
     enable_llm_fallback = False
     st.sidebar.caption(
-        "No ANTHROPIC_API_KEY configured -- an unrecognized statement format will be "
+        "No OPENAI_API_KEY configured -- an unrecognized statement format will be "
         "flagged for manual review instead of an AI fallback. See "
         "[.streamlit/secrets.toml.example](https://github.com/hancel-eng/schedule-c-prep-tool/blob/main/.streamlit/secrets.toml.example)."
     )

@@ -8,6 +8,40 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for how the current system works,
 and [README.md](README.md#known-limitations--roadmap) for what's still
 open.
 
+## 2026-10-01 — AI fallback switched from Anthropic to OpenAI
+
+The AI fallback (`core/llm_extractor.py`, `core/bank_learner.py`) ran on
+Claude (Anthropic) until now. Switched to OpenAI, driven by a budget
+constraint, not a technical one -- Tax Savers has OpenAI credits already
+available and no budget for a separate Anthropic key.
+
+Both modules were rewritten against OpenAI's Responses API
+(`client.responses.create`), not Chat Completions: Chat Completions
+doesn't accept an inline base64 PDF (only a `file_id` from a prior
+upload), while Responses does, via an `input_file` content part. Verified
+directly against the installed SDK's own type definitions and OpenAI's
+docs before writing the code, not assumed from training knowledge -- the
+model lineup (`gpt-6-astra` / `gpt-6.1-sol` / `gpt-6-luna`) postdates this
+project's working knowledge, so pricing and parameter shapes were checked
+live rather than guessed. Structured output uses the same
+`strict: true` JSON-schema mechanism conceptually as Claude's strict tool
+use, just under OpenAI's own parameter names (`text.format`, read back via
+`response.output_text`). Picked `gpt-6-luna` -- OpenAI's cheapest current
+tier, explicitly positioned for "focused, high-volume tasks" -- over the
+flagship tier used for the equivalent Claude call, given this is a literal
+transcription task and the whole point of this migration was cost.
+
+Both modules' request/response shapes changed; their test doubles
+(`tests/test_llm_extractor.py`, `tests/test_bank_learner.py`) were
+rewritten to mock the OpenAI client instead of Anthropic's, never calling
+either real API. `ANTHROPIC_API_KEY` is replaced everywhere by
+`OPENAI_API_KEY` (Streamlit secrets, `.streamlit/secrets.toml.example`,
+`app.py`'s sidebar). `requirements.txt` swaps the `anthropic` package for
+`openai`.
+
+Not yet verified against a real OpenAI key or a real statement -- next
+step once Lindsay's key is in Streamlit secrets.
+
 ## 2026-10-01 — Learned bank profiles now survive a redeploy
 
 A real client statement from a bank outside Regions/Capital One/Chase was

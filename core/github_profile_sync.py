@@ -16,7 +16,7 @@ README.md for exact setup steps). Without it, learning still works for the
 lifetime of the current running instance (core/bank_profiles.py's own local
 save still happens first, unconditionally) -- it just won't survive the
 next deploy. Same graceful-degradation pattern as a missing
-ANTHROPIC_API_KEY: never required, never a crash, just a smaller guarantee.
+OPENAI_API_KEY: never required, never a crash, just a smaller guarantee.
 """
 import base64
 import json

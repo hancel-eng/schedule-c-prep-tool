@@ -2,7 +2,7 @@
 statement format triggers the (mocked) LLM fallback once, a profile gets
 learned and saved, and a second statement from the same "bank" is then
 parsed correctly by the ordinary rules engine alone -- with the LLM mock
-never called again. Never calls the real Anthropic API.
+never called again. Never calls the real OpenAI API.
 """
 import functools
 import io
@@ -133,7 +133,7 @@ def test_unrecognized_bank_escalates_to_llm_and_learns_a_reusable_profile(
 def test_llm_fallback_disabled_leaves_unreliable_extraction_flagged_not_silently_wrong(
     isolated_bank_profiles,
 ):
-    """With the fallback off (no ANTHROPIC_API_KEY configured), an
+    """With the fallback off (no OPENAI_API_KEY configured), an
     unrecognized statement must still return *something* rather than
     crash -- and must say plainly that it couldn't be trusted, never pass
     off a wrong number as a confident one."""
