@@ -184,12 +184,12 @@ client's results past closing the tab, download its Excel workpaper first.
   Needs Review, or Unresolved. Anything short of High Confidence goes to
   the exception/question list instead of being silently assigned a
   category.
-- **Statements are read by deterministic rules, not AI, by default.**
-  Every result can be traced back to exactly why the tool made that call.
-  AI (OpenAI) only ever gets involved as a fallback for a bank the tool
-  has genuinely never seen before, and even then only to transcribe what's
-  printed — never to decide a tax category or a dollar total, and never
-  for a bank already recognized. See
+- **Documents are read by deterministic rules, not AI, by default.** Every
+  result can be traced back to exactly why the tool made that call. AI
+  (OpenAI) only ever gets involved for a document the tool genuinely
+  doesn't recognize, and even then only to classify it and transcribe
+  what's printed — never to decide a tax category or a dollar total, and
+  never for a bank already recognized. See
   [Unrecognized bank formats](#unrecognized-bank-formats).
 - **Several clients, one browser session, nothing stored outside it.**
   Switching clients never mixes their data together, and nothing here is
@@ -210,8 +210,9 @@ core/                         All the actual business logic, independent
                                of the app — see ARCHITECTURE.md for detail
   pdf_parser.py                 Reads bank/credit-card statement PDFs
   bank_profiles.py               Loads/saves a learned bank's header vocabulary
-  llm_extractor.py                AI fallback: transcribes an unrecognized statement
-  bank_learner.py                 Proposes a reusable profile from that transcription
+  idp_extractor.py                 AI fallback: classifies + extracts an unrecognized document
+  check_matcher.py                 Matches a check copy's payee to its statement line item
+  bank_learner.py                 Proposes a reusable profile from a bank-statement transcription
   github_profile_sync.py          Commits a learned profile to GitHub so it survives a deploy
   spreadsheet_parser.py         Reads client Excel/CSV files
   totals_parser.py              Reads client-provided year-end totals
@@ -240,19 +241,30 @@ rule-based parser — but every bank prints its statements a little
 differently, and the rules for a brand-new bank used to need a manual code
 fix before that bank's numbers could be trusted.
 
-That's no longer true. When a statement's format doesn't match any bank the
+That's no longer true. When a document's format doesn't match any bank the
 tool already knows, it automatically:
 
 1. Tries every bank format it has already learned (still free, instant).
-2. If none match, asks OpenAI's AI to read that one statement and
-   transcribe every transaction — costs a few cents, and only ever happens
-   for a genuinely new bank, never for one already recognized.
-3. If that reads correctly (double-checked against the statement's own
-   declared totals — see
-   [ARCHITECTURE.md](ARCHITECTURE.md#unrecognized-bank-formats-the-self-teaching-fallback)
-   for exactly how), the tool figures out that bank's format on its own and
-   saves it, so **every statement from that bank after the first is free**
-   — no AI, no manual fix, no waiting on a developer.
+2. If none match, asks OpenAI's AI to look at that one document — not just
+   assuming it's a mis-formatted bank statement, but first figuring out
+   *what it actually is*: a bank statement, a standalone check copy, an
+   invoice, or a receipt. Costs a few cents, and only ever happens for a
+   document the tool genuinely hasn't seen a format for, never for one
+   already recognized.
+   - A **bank statement** is transcribed in full and double-checked
+     against the statement's own declared totals — and, when the statement
+     prints a running balance next to each transaction, against that too,
+     row by row (see
+     [ARCHITECTURE.md](ARCHITECTURE.md#unrecognized-documents-the-multiclass-self-teaching-fallback)
+     for exactly how). If it checks out, the tool figures out that bank's
+     format on its own and saves it, so **every statement from that bank
+     after the first is free** — no AI, no manual fix, no waiting on a
+     developer.
+   - A **check copy** has its payee matched to the matching "Check #..."
+     line item a bank statement's own cleared-checks listing never prints
+     a name for. See [Check copies](#check-copies) below.
+   - An **invoice or receipt** is kept as a supporting document for the
+     preparer's reference, shown in the **Supporting Documents** tab.
 
 **To turn this on**, add an OpenAI API key to Streamlit secrets:
 
@@ -263,12 +275,12 @@ OPENAI_API_KEY = "sk-..."
 ```
 
 See [.streamlit/secrets.toml.example](.streamlit/secrets.toml.example).
-Without a key configured, an unrecognized statement is simply flagged for
+Without a key configured, an unrecognized document is simply flagged for
 manual review instead — nothing else about the tool changes, and a
 recognized bank's statements are never affected either way. A sidebar
-toggle ("Use AI fallback for statements the rule-based parser can't read")
-lets you turn this off per-session even with a key configured, if you'd
-rather review an unrecognized statement by hand than spend the few cents.
+toggle ("Use AI for documents the rule-based parser can't read") lets you
+turn this off per-session even with a key configured, if you'd rather
+review an unrecognized document by hand than spend the few cents.
 
 **For a learned profile to survive a deploy**, also add a GitHub token:
 
@@ -290,6 +302,24 @@ touch anything else in your GitHub account. Exact setup steps:
 3. **Repository access** → "Only select repositories" → this repo.
 4. **Permissions** → Repository permissions → **Contents** → **Read and write**. Leave everything else as "No access".
 5. Generate, copy the token (shown once), paste it into Streamlit secrets as `GITHUB_TOKEN` above.
+
+## Check copies
+
+A bank statement's own cleared-checks listing only ever has a check number
+and an amount — never a payee, because the statement itself doesn't print
+one. Raised directly by a client: *"las copias de cheques son necesarias,
+porque cuando el cliente paga con cheque hay que saber quién fue el
+proveedor"* (check copies are needed to know who the vendor was).
+
+Upload the check copy/report alongside the statements for the same client.
+If it's classified as a check (see above — needs `OPENAI_API_KEY`), its
+payee is matched to the matching "Check #..." line item automatically:
+check number first, amount only as a fallback and only when it uniquely
+points to one still-unlabeled check — two checks for the same amount is
+common enough (rent, a recurring vendor) that guessing would be worse than
+leaving both unmatched. Anything that couldn't be matched with confidence
+shows up in the **Supporting Documents** tab, flagged for manual review —
+never silently attached to the wrong transaction.
 
 ## Known limitations & roadmap
 

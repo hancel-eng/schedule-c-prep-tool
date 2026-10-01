@@ -8,6 +8,60 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for how the current system works,
 and [README.md](README.md#known-limitations--roadmap) for what's still
 open.
 
+## 2026-10-01 — Multiclass document processing: checks, invoices, receipts
+
+Widened the AI escalation path from "assume every unrecognized upload is a
+mis-parsed bank statement" into a genuine multiclass IDP (Intelligent
+Document Processing) system, after the client asked directly to build the
+app around one: a document the rules engine can't read is now classified
+first (`bank_statement` / `check` / `invoice` / `receipt` / `unknown`) and
+extracted accordingly, instead of being force-fit into the bank-statement
+pipeline and silently misread.
+
+- **`core/idp_extractor.py`** (replaces `core/llm_extractor.py`, now
+  deleted as dead code) does classification and extraction in one AI
+  call, via a `strict: true` Structured Outputs JSON schema covering all
+  four document shapes. A bank statement's transactions still go through
+  the ordinary rule-based `TaxCategorizer`, same discipline as before.
+- **Per-row balance verification.** A bank statement's extraction is now
+  checked two ways, never the model's own self-reported
+  `quality_validation.mathematically_balanced` alone: the existing
+  aggregate "declared vs. extracted" check, plus -- when the statement
+  prints a running balance next to each transaction --
+  `verify_bank_statement_balance_chain`, an independent Python re-check
+  that walks the opening balance forward through every transaction and
+  compares against each row's own resulting balance. This is strictly
+  stronger than the aggregate check alone: it would have caught the Wells
+  Fargo running-balance-misread-as-amount bug (see the entry below) row by
+  row, the moment it happened, rather than only at the total.
+- **`core/check_matcher.py`** (new) fills in the payee on a "Check #NNNN"
+  line item a bank statement's own cleared-checks listing never prints a
+  name for, using a separately-uploaded check-copy classified as `check`.
+  Matches by check number first, amount only as a fallback and only when
+  it uniquely identifies one still-unlabeled check -- never guesses when
+  two checks share an amount. Closes a gap raised directly by the client
+  weeks earlier: *"las copias de cheques son necesarias, porque cuando el
+  cliente paga con cheque hay que saber quién fue el proveedor."*
+- **New "Supporting Documents" tab** (only appears when there's something
+  in it) shows matched/unmatched check copies and any invoices/receipts
+  uploaded for reference -- none of this counts toward Gross Receipts or
+  Total Expenses; invoices/receipts are not auto-matched to transactions
+  (kept as supporting documentation only, a smaller scope than check
+  matching since no one has asked for automatic invoice reconciliation
+  yet).
+
+Deliberately **not** a classify-every-upload system: this entire chain is
+reached only where it already was -- after the rules engine (and any
+learned bank profile) already failed its own reliability check. A
+recognized Regions/Capital One/Chase statement, or any bank whose format
+has already been learned, never reaches it and costs nothing, same as
+before this change.
+
+See
+[ARCHITECTURE.md](ARCHITECTURE.md#unrecognized-documents-the-multiclass-self-teaching-fallback)
+for the full design and
+[README.md](README.md#check-copies) for how to use check matching.
+
 ## 2026-10-01 — Fixed: the AI fallback never ran for a real Wells Fargo client
 
 Root cause of "I uploaded the new bank's statements with the API key
@@ -105,7 +159,7 @@ this repository with only "Contents: Read and write" permission. Without
 that token configured, nothing breaks -- the profile still works for the
 rest of the current instance, exactly as before this fix, it just won't
 survive the *next* deploy either. See
-[ARCHITECTURE.md](ARCHITECTURE.md#unrecognized-bank-formats-the-self-teaching-fallback)
+[ARCHITECTURE.md](ARCHITECTURE.md#unrecognized-documents-the-multiclass-self-teaching-fallback)
 and [README.md](README.md#unrecognized-bank-formats) for setup.
 
 Still open: confirming with the actual failing bank's statements whether
@@ -222,7 +276,7 @@ day:
   rules engine* reproduces the same numbers with it before saving it as a
   reusable profile (`core/bank_learner.py`). A bank costs a few cents once
   (maybe twice), then nothing, forever, automatically. See
-  [ARCHITECTURE.md](ARCHITECTURE.md#unrecognized-bank-formats-the-self-teaching-fallback)
+  [ARCHITECTURE.md](ARCHITECTURE.md#unrecognized-documents-the-multiclass-self-teaching-fallback)
   for the full design and
   [README.md](README.md#unrecognized-bank-formats) for how to turn it on
   (`ANTHROPIC_API_KEY` in Streamlit secrets; off by default with no key

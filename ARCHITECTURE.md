@@ -13,7 +13,7 @@ it's built and why, for anyone about to change it.
 - [Client questions and the answer loop](#client-questions-and-the-answer-loop)
 - [The Streamlit session pattern](#the-streamlit-session-pattern)
 - [Visual theme](#visual-theme)
-- [Unrecognized bank formats: the self-teaching fallback](#unrecognized-bank-formats-the-self-teaching-fallback)
+- [Unrecognized documents: the multiclass self-teaching fallback](#unrecognized-documents-the-multiclass-self-teaching-fallback)
 - [Testing](#testing)
 
 ## Pipeline, module by module
@@ -56,7 +56,7 @@ so every module is independently unit-testable (and is: see
 
    For the general bank-statement strategy specifically, an unrecognized
    bank's format no longer has to be fixed by hand — see
-   [Unrecognized bank formats: the self-teaching fallback](#unrecognized-bank-formats-the-self-teaching-fallback)
+   [Unrecognized documents: the multiclass self-teaching fallback](#unrecognized-documents-the-multiclass-self-teaching-fallback)
    below, which covers this module together with `bank_profiles.py`,
    `llm_extractor.py`, and `bank_learner.py`.
 
@@ -67,22 +67,29 @@ so every module is independently unit-testable (and is: see
    or missing profile files are skipped, never raised, since a bad profile
    must not be able to break parsing for every other document.
 
-4. **`core/llm_extractor.py`** — `extract_transactions_llm`. The paid
-   escalation path for a statement `pdf_parser.py`'s rules don't recognize
-   at all. Sends the PDF to OpenAI (Responses API) for a literal
-   transcription only (never categorization) via a `strict: true`
-   Structured Outputs JSON schema, so the result is exactly as typed and
-   shaped as a rule-based extraction — every transcribed transaction still
-   goes through the ordinary `TaxCategorizer.categorize_transaction()`
-   call. Needs `OPENAI_API_KEY` in the environment (see
-   [README.md](README.md#unrecognized-bank-formats)); a missing key or
+4. **`core/idp_extractor.py`** — `classify_and_extract`. The paid
+   escalation path for a document `pdf_parser.py`'s rules don't recognize
+   at all. Sends it to OpenAI (Responses API) for classification
+   (`bank_statement` / `check` / `invoice` / `receipt` / `unknown`) and
+   type-specific extraction in one call, via a `strict: true` Structured
+   Outputs JSON schema covering all four shapes at once — never
+   categorization, for a bank statement or anything else. A bank
+   statement's transcribed transactions still go through the ordinary
+   `TaxCategorizer.categorize_transaction()` call, same as a rule-based
+   extraction. Also exports `verify_bank_statement_balance_chain` (an
+   independent, Python-side re-check of the per-row running-balance
+   arithmetic the model was asked to self-verify — never trusts that
+   self-report alone) and `bank_statement_payload_to_transactions` (maps
+   the bank-statement shape into the same transaction-dict shape every
+   other strategy produces). Needs `OPENAI_API_KEY` in the environment
+   (see [README.md](README.md#unrecognized-bank-formats)); a missing key or
    package raises a clean, catchable `RuntimeError`, not a crash.
 
 5. **`core/bank_learner.py`** — `learn_bank_profile`. Asks the same model
-   to name the section-header phrases in a statement `llm_extractor.py`
-   already transcribed successfully, returning a candidate `BankProfile`.
-   Never trusted on its own — see the self-teaching section below for how the
-   caller verifies it before saving.
+   to name the section-header phrases in a statement `idp_extractor.py`
+   already classified and transcribed as a bank statement, returning a
+   candidate `BankProfile`. Never trusted on its own — see the self-teaching
+   section below for how the caller verifies it before saving.
 
 6. **`core/github_profile_sync.py`** — `commit_profile_to_github`. Writes a
    verified, saved profile straight back to `bank_profiles/` on this repo's
@@ -99,21 +106,31 @@ so every module is independently unit-testable (and is: see
    instance-only, the same degraded-but-functional state the feature was in
    before this module existed.
 
-7. **`core/spreadsheet_parser.py`** — `SpreadsheetParser`. Client Excel/CSV
+7. **`core/check_matcher.py`** — `match_checks_to_transactions`. Fills in
+   the payee on a "Check #NNNN" transaction (already extracted from a
+   statement's own cleared-checks listing, which never prints a payee)
+   using a standalone check-copy classified by `idp_extractor.py`. Matches
+   by check number first, amount only as a fallback and only when it
+   uniquely identifies one still-unlabeled check transaction — never
+   guesses when two checks share an amount. A check that can't be matched
+   with confidence is returned, not dropped; `app.py` surfaces it in the
+   Supporting Documents tab as unmatched.
+
+8. **`core/spreadsheet_parser.py`** — `SpreadsheetParser`. Client Excel/CSV
    files vary in whether income is the positive or negative sign
    (`_detect_sign_convention` classifies each sheet as `standard`,
    `inverted`, or `unsigned` and normalizes to the tool-wide convention:
    income positive, expenses negative — the same convention the PDF parser
    uses).
 
-8. **`core/totals_parser.py`** — `TotalsParser`. Maps client-provided
+9. **`core/totals_parser.py`** — `TotalsParser`. Maps client-provided
    year-end totals to Schedule C lines with special-rule flags (vehicle
    mileage vs. actual, the 50% meals limitation, the 1099 threshold, health
    insurance belonging on Schedule 1 not Schedule C, home office). Not
    currently reachable from the UI — see
    [README.md](README.md#known-limitations--roadmap).
 
-9. **`core/tax_categorizer.py`** — `TaxCategorizer`. The keyword dictionary
+10. **`core/tax_categorizer.py`** — `TaxCategorizer`. The keyword dictionary
    (`SCHEDULE_C_CATEGORIES`) and the Non-P&L exclusion patterns
    (`NON_PNL_PATTERNS`), both matched on **word boundaries**, not bare
    substrings — a short/generic keyword like `mobil` (the gas brand) must
@@ -125,7 +142,7 @@ so every module is independently unit-testable (and is: see
    (`custom_rules.json`) take precedence over the built-in dictionary but
    not over Non-P&L detection.
 
-10. **`core/exception_analyzer.py`** — `ExceptionAnalyzer`. Scans every
+11. **`core/exception_analyzer.py`** — `ExceptionAnalyzer`. Scans every
    transaction into review queues: potential personal expense, potential
    fixed asset (over the de minimis threshold, or matching an
    asset-shaped keyword), 1099 accumulation per contractor, unusual/large
@@ -135,13 +152,13 @@ so every module is independently unit-testable (and is: see
    is skipped — this, not category text, is what lets an answered question
    stop regenerating.
 
-11. **`core/vendor_grouping.py`** — `group_potential_personal`. Groups
+12. **`core/vendor_grouping.py`** — `group_potential_personal`. Groups
    personal-expense-review transactions by vendor (P2P payment apps grouped
    by service *and* recipient specifically, so different people paid through
    the same app are never merged) and applies the materiality threshold to
    each group's total, not each individual charge.
 
-12. **`core/question_generator.py`** — `ClientQuestionGenerator`. Builds the
+13. **`core/question_generator.py`** — `ClientQuestionGenerator`. Builds the
    client-facing question list from the exception queues. Every question
    carries `transaction_keys` — a list, even for a single-transaction
    question — back to the exact transaction(s) it concerns (see
@@ -149,7 +166,7 @@ so every module is independently unit-testable (and is: see
    date + payee + amount + source file, since there's no database or
    synthetic id in a stateless single-session app).
 
-13. **`core/answer_applier.py`** — `apply_client_answers`. Applies an
+14. **`core/answer_applier.py`** — `apply_client_answers`. Applies an
    answered question to the transaction list. Answers are a fixed
    vocabulary per question type (`ANSWER_OPTIONS`), never free text, so this
    module never has to guess what an answer meant — an answer outside the
@@ -158,10 +175,10 @@ so every module is independently unit-testable (and is: see
    by hand and changes nothing. Every transaction it touches is stamped
    `client_confirmed=True`.
 
-14. **`core/reconciliation.py`** — `ReconciliationChecker`. See
+15. **`core/reconciliation.py`** — `ReconciliationChecker`. See
     [Reconciliation](#reconciliation).
 
-15. **`core/excel_exporter.py`** — `ExcelWorkpaperExporter`. Builds the
+16. **`core/excel_exporter.py`** — `ExcelWorkpaperExporter`. Builds the
     seven-sheet workbook described in [README.md](README.md#what-it-produces).
 
 ## Confidence states
@@ -372,7 +389,7 @@ Two hard constraints worth knowing before touching this:
   re-check the selectors against the new version's frontend bundle (or a
   live render) before trusting them again.
 
-## Unrecognized bank formats: the self-teaching fallback
+## Unrecognized documents: the multiclass self-teaching fallback
 
 The three-strategy PDF architecture (P&L report / credit card / general
 bank) and the categorization engine (word-boundary keyword matching,
@@ -411,26 +428,55 @@ it's usable. `BankPDFParser.parse_pdf()` runs an escalation chain instead:
    the same rules engine (`_parse_general_or_scanned_pdf(..., profile=...)`
    — additive, not a separate code path) until one passes the same
    self-check.
-4. **AI fallback** (`core/llm_extractor.py`, a few cents, only reached if
-   1–3 all failed) — OpenAI transcribes the PDF literally (date, payee,
-   amount, direction, plus the statement's own declared totals) via a
-   `strict: true` Structured Outputs JSON schema. The transcribed
-   transactions still go through the ordinary rule-based `TaxCategorizer`
-   — an AI model is used for extraction only, never for deciding a tax
-   category. The result is self-checked the same way (step 2) against the
-   totals it *also* transcribed: if what was "read" doesn't sum to what
-   the statement says it should, that surfaces as a reconciliation
-   problem, never a silently wrong number.
-5. **Learning** (`core/bank_learner.py`) — only attempted once step 4
-   already passed its self-check. Asks the same model to name this bank's
-   section-header phrases, then re-runs the rules engine with that
-   candidate profile against the *same* document and compares the result
-   to the AI's own verified numbers. Only a profile that reproduces them
-   exactly is saved to `bank_profiles/`; the app never trusts an unverified
-   profile, and a profile that fails this check is simply discarded — that
-   bank keeps using the LLM path until one that passes exists. A failure
-   anywhere in this step is swallowed (never allowed to take down an
-   extraction that already succeeded at step 4).
+4. **Multiclass AI classification** (`core/idp_extractor.py`, a few cents,
+   only reached if 1–3 all failed) — one call to OpenAI classifies the
+   document (`bank_statement` / `check` / `invoice` / `receipt` /
+   `unknown`) and extracts it accordingly, via a `strict: true` Structured
+   Outputs JSON schema covering all four shapes at once. This step exists
+   because step 1–3 always assumed an unrecognized document *was* a
+   mis-parsed bank statement — true for a genuinely new bank, but not for
+   a document that was never a bank statement at all (a standalone check
+   copy, an invoice, a receipt), which used to get silently force-fit into
+   the bank-statement pipeline and misread. The branch on
+   `detected_document_type`:
+   - `bank_statement` — transcribed transactions (date, payee, amount,
+     direction, and the running balance on that row if the statement
+     prints one) go through the ordinary rule-based `TaxCategorizer`, same
+     as every other strategy; an AI model is used for extraction only,
+     never for deciding a tax category. Verified by **two** independent
+     signals, neither the model's own self-reported
+     `quality_validation.mathematically_balanced` alone: the same
+     aggregate "declared vs. extracted" check every strategy is held to
+     (step 2's `_extraction_looks_reliable`), plus, when the statement
+     prints a running balance per row,
+     `verify_bank_statement_balance_chain` -- walking `opening_balance`
+     forward through every transaction and comparing against each row's
+     own `resulting_balance`. This second check is strictly stronger: it's
+     what would have caught Wells Fargo's running-balance-misread-as-
+     amount bug (see [CHANGELOG.md](CHANGELOG.md), 2026-10-01) on its own,
+     row by row, rather than only at the aggregate level after the fact.
+   - `check` — extracted fields (drawer, payee, check number, amount) are
+     never transactions on their own; see
+     [Check copies: filling in a payee a statement never prints](#check-copies-filling-in-a-payee-a-statement-never-prints)
+     below.
+   - `invoice` / `receipt` — kept as a supporting document (issuer, date,
+     total, line items), shown for the preparer's reference; not matched
+     against transactions automatically.
+   - `unknown` — flagged for manual review. Zero transactions are counted
+     from it: the already-known-wrong rule-based garbage from step 1 is
+     never allowed to flow through just because *something* was extracted
+     from it.
+5. **Learning** (`core/bank_learner.py`) — only attempted when step 4
+   classified the document as a bank statement and it passed verification.
+   Asks the same model to name this bank's section-header phrases, then
+   re-runs the rules engine with that candidate profile against the *same*
+   document and compares the result to the AI's own verified numbers. Only
+   a profile that reproduces them exactly is saved to `bank_profiles/`;
+   the app never trusts an unverified profile, and a profile that fails
+   this check is simply discarded — that bank keeps using the AI path
+   until a profile that passes exists. A failure anywhere in this step is
+   swallowed (never allowed to take down an extraction that already
+   succeeded at step 4).
 6. **Persistence** (`core/github_profile_sync.py`) — only attempted once
    step 5 already saved the profile locally. Commits the same profile
    straight back to `bank_profiles/` on this repo's `main` branch via the
@@ -440,18 +486,45 @@ it's usable. `BankPDFParser.parse_pdf()` runs an escalation chain instead:
    fresh clone of the repo on every deploy/restart. Without this step (no
    `GITHUB_TOKEN` configured, or the request fails for any reason), the
    bank still works for the rest of this running instance; it just has to
-   be re-learned — paying the LLM cost again — the next time the app
+   be re-learned — paying the AI cost again — the next time the app
    redeploys. Same swallow-and-continue discipline as step 5: a failure
    here never takes down the extraction itself.
 
 Net effect: a brand-new bank costs a few cents the first time (maybe twice,
 if the first attempt's profile doesn't reproduce cleanly), then $0 forever
 after — across every future deploy, not just the current running instance
-— with zero code changes required. The sidebar toggle ("Use AI
-fallback...") and `OPENAI_API_KEY` gate step 4 entirely — with no key
-configured, an unrecognized statement stops after step 3 and is flagged in
+— with zero code changes required. The sidebar toggle ("Use AI for
+documents...") and `OPENAI_API_KEY` gate step 4 entirely — with no key
+configured, an unrecognized document stops after step 3 and is flagged in
 its diagnostics notes for manual review, exactly as before this fallback
-existed; nothing about a recognized bank's behavior changes either way.
+existed; nothing about a recognized bank's behavior changes either way,
+and **this whole chain never runs at all for a document the filename-based
+router already knows how to read** (a recognized bank/credit-card
+statement, or a P&L report) — multiclass classification is additive to the
+existing cost-free fast path, not a replacement for it.
+
+### Check copies: filling in a payee a statement never prints
+
+A bank statement's own cleared-checks listing (`CHECK_DETAIL` section in
+`_parse_general_or_scanned_pdf`) only ever has a check number and an
+amount — no payee, because the statement itself doesn't print one. Raised
+directly by the client: "las copias de cheques son necesarias, porque
+cuando el cliente paga con cheque hay que saber quién fue el proveedor."
+
+When a separately-uploaded file is classified `check` (step 4 above), its
+extracted `payee`/`check_number`/`numerical_amount` become a match
+candidate for `core/check_matcher.py`'s `match_checks_to_transactions`,
+run once per upload batch in `app.py` after every file has been parsed.
+Matching is deliberately conservative, same "never guess" discipline as
+everywhere else: check number first (exact, digits only), amount only as
+a fallback when the number is missing *and* uniquely identifies one
+still-unlabeled check transaction — two checks for the same amount in the
+same statement (rent, a recurring vendor) is common enough that guessing
+would be worse than leaving both unmatched. A check copy that can't be
+matched with confidence is reported back as unmatched (shown in the
+**Supporting Documents** tab, which only appears when there's something in
+it) rather than silently attached to the nearest plausible transaction or
+dropped.
 
 ## Testing
 

@@ -147,7 +147,7 @@ class BankPDFParser:
 
     def __init__(self, categorizer: TaxCategorizer = None, enable_llm_fallback: bool = True):
         self.categorizer = categorizer or TaxCategorizer()
-        # Escalation to core/llm_extractor.py for a statement whose format
+        # Escalation to core/idp_extractor.py for a document whose format
         # the rules engine doesn't recognize at all -- see parse_pdf() and
         # _recover_unrecognized_bank(). Off by default has no cost either
         # way (the LLM path is only ever reached when the rules engine
@@ -191,6 +191,7 @@ class BankPDFParser:
         is_pnl = "p & l" in filename.lower() or "pnl" in filename.lower() or "profit" in filename.lower()
         is_credit_card = any(kw in filename.lower() for kw in ["capital one", "spark", "card", "chase card", "amex", "citi"])
 
+        idp_result: Optional[Dict[str, Any]] = None
         if is_pnl:
             doc_data = self._parse_pnl_report(io.BytesIO(raw_bytes), filename, statement_year)
         elif is_credit_card:
@@ -198,14 +199,20 @@ class BankPDFParser:
         else:
             doc_data = self._parse_general_or_scanned_pdf(io.BytesIO(raw_bytes), filename, statement_year, statement_end_month)
             if self.enable_llm_fallback and not self._extraction_looks_reliable(doc_data):
-                doc_data = self._recover_unrecognized_bank(
+                doc_data, idp_result = self._recover_unrecognized_bank(
                     raw_bytes, filename, statement_year, statement_end_month, doc_data
                 )
 
         tx_dicts = [tx.model_dump() for tx in doc_data.transactions]
         months_found = list(set([self._extract_month(tx['date']) for tx in tx_dicts if tx.get('date')]))
 
-        return {
+        # document_type/check_record/supporting_document let app.py tell a
+        # genuine bank statement (the overwhelming majority of uploads, and
+        # the only case that existed before the multiclass escalation path)
+        # apart from a document that was classified as something else
+        # entirely -- a check copy or an invoice/receipt kept as supporting
+        # documentation, never mixed into the transaction list.
+        result = {
             "filename": filename,
             "statement_summary": doc_data.model_dump(exclude={"transactions"}),
             "transactions": tx_dicts,
@@ -214,8 +221,18 @@ class BankPDFParser:
             "diagnostics": [
                 f"Parsed {doc_data.bank_or_vendor} ({doc_data.document_type})",
                 f"Extracted {len(tx_dicts)} items cleanly via Universal Strategy Pipeline."
-            ] + list(doc_data.diagnostics_notes)
+            ] + list(doc_data.diagnostics_notes),
+            "document_type": "bank_statement",
+            "check_record": None,
+            "supporting_document": None,
         }
+        if idp_result:
+            result["document_type"] = idp_result["document_type"]
+            if idp_result["document_type"] == "check":
+                result["check_record"] = idp_result["payload"]
+            elif idp_result["document_type"] in ("invoice", "receipt"):
+                result["supporting_document"] = {"type": idp_result["document_type"], **(idp_result["payload"] or {})}
+        return result
 
     # -------------------------------------------------------------------------
     # STRATEGY 1: P&L REPORT / FINANCIAL SUMMARY PARSER (e.g. TD Tree 2025 P & L.pdf)
@@ -1085,18 +1102,37 @@ class BankPDFParser:
 
     def _recover_unrecognized_bank(self, raw_bytes: bytes, filename: str, year: int,
                                     statement_end_month: Optional[int],
-                                    fallback_data: FinancialDocumentData) -> FinancialDocumentData:
-        """Escalation path for a statement the rules engine's default
+                                    fallback_data: FinancialDocumentData
+                                    ) -> "tuple[FinancialDocumentData, Optional[Dict[str, Any]]]":
+        """Escalation path for a document the rules engine's default
         vocabulary doesn't recognize (its own extracted totals don't foot
         against what the statement declares -- see
         _extraction_looks_reliable). Tries every previously learned bank
-        profile first (free, see core/bank_profiles.py), then the LLM
-        (core/llm_extractor.py -- costs a few cents). If the LLM's result
-        checks out against the statement's own declared totals, attempts to
-        learn a reusable profile from it (core/bank_learner.py) so the next
-        statement from this same bank is free too. Learning is a bonus, not
-        a requirement: any failure in that last step is swallowed, since it
-        must never take down an extraction that already succeeded.
+        profile first (free, see core/bank_profiles.py), then multiclass AI
+        document processing (core/idp_extractor.py -- a few cents): this no
+        longer assumes the document must be a mis-parsed bank statement --
+        it's classified first (bank_statement / check / invoice / receipt /
+        unknown), because a document that was never a bank statement at all
+        (a standalone check copy, an invoice, a receipt) was previously
+        force-fit into the bank-statement pipeline and silently misread.
+
+        Returns (doc_data, idp_result). idp_result is None for the ordinary
+        case (a learned profile matched, or the document really is a bank
+        statement and was extracted as one, or AI processing wasn't
+        available/failed and fallback_data is the best we have). It's a
+        dict {"document_type": ..., "payload": ...} when the document was
+        classified as something other than a bank statement -- the caller
+        (parse_pdf) surfaces that separately instead of mixing non-
+        transaction data into the transaction list.
+
+        If a bank_statement extraction checks out (both the aggregate
+        totals and, where the statement prints one, the per-row running-
+        balance chain), attempts to learn a reusable profile from it
+        (core/bank_learner.py) so the next statement from this same bank is
+        free too, then commits it to GitHub (core/github_profile_sync.py)
+        so it survives the next deploy. Both are bonuses, not requirements:
+        any failure in either is swallowed, since it must never take down
+        an extraction that already succeeded.
         """
         for profile in load_bank_profiles():
             candidate = self._parse_general_or_scanned_pdf(
@@ -1105,54 +1141,120 @@ class BankPDFParser:
             if self._extraction_looks_reliable(candidate):
                 candidate.diagnostics_notes.append(
                     f"Unrecognized by the default rules -- matched learned bank profile "
-                    f"'{profile.bank_slug}' instead (no LLM call needed)."
+                    f"'{profile.bank_slug}' instead (no AI call needed)."
                 )
-                return candidate
+                return candidate, None
 
         try:
-            from core.llm_extractor import extract_transactions_llm
+            from core.idp_extractor import (
+                classify_and_extract, bank_statement_payload_to_transactions,
+                verify_bank_statement_balance_chain,
+            )
         except ImportError as e:
             fallback_data.diagnostics_notes.append(
-                f"Unrecognized statement format and the LLM fallback isn't available ({e}). "
+                f"Unrecognized document format and AI document processing isn't available ({e}). "
                 f"Extraction below may be incomplete -- verify manually via Reconciliation QC."
             )
-            return fallback_data
+            return fallback_data, None
 
         try:
-            llm_data = extract_transactions_llm(raw_bytes, filename, year, self.categorizer)
+            idp_payload = classify_and_extract(raw_bytes, filename)
         except Exception as e:
             fallback_data.diagnostics_notes.append(
-                f"Unrecognized statement format; LLM fallback failed ({e}). "
+                f"Unrecognized document format; AI document processing failed ({e}). "
                 f"Extraction below may be incomplete -- verify manually via Reconciliation QC."
             )
-            return fallback_data
+            return fallback_data, None
 
-        if not self._extraction_looks_reliable(llm_data):
-            llm_data.diagnostics_notes.append(
-                "Unrecognized statement format; the LLM fallback's own extraction did not "
-                "reconcile against the statement's declared totals either -- review by hand."
+        metadata = idp_payload.get("processing_metadata") or {}
+        structured = idp_payload.get("structured_data") or {}
+        quality = idp_payload.get("quality_validation") or {}
+        doc_type = metadata.get("detected_document_type", "unknown")
+        alerts_suffix = f" Model-reported concerns: {'; '.join(quality['alerts'])}." if quality.get("alerts") else ""
+
+        if doc_type == "check":
+            empty = FinancialDocumentData(document_type="check", bank_or_vendor=f"Check copy: {filename}")
+            empty.diagnostics_notes.append(
+                f"Classified as a check copy, not a bank statement -- extracted for matching "
+                f"against the statement's own 'Check #...' line items; no transactions counted "
+                f"from this file.{alerts_suffix}"
             )
-            return llm_data
+            return empty, {"document_type": "check", "payload": structured.get("check") or {}}
 
-        llm_data.diagnostics_notes.append(
-            "Unrecognized statement format -- extracted via LLM fallback and reconciles "
-            "against the statement's own declared totals."
+        if doc_type in ("invoice", "receipt"):
+            empty = FinancialDocumentData(document_type=doc_type, bank_or_vendor=f"{doc_type.title()}: {filename}")
+            empty.diagnostics_notes.append(
+                f"Classified as {'an' if doc_type == 'invoice' else 'a'} {doc_type}, not a bank "
+                f"statement -- kept as a supporting document; no transactions counted from this "
+                f"file.{alerts_suffix}"
+            )
+            return empty, {"document_type": doc_type, "payload": structured.get("invoice_or_receipt") or {}}
+
+        if doc_type != "bank_statement":
+            empty = FinancialDocumentData(document_type="unknown", bank_or_vendor=filename)
+            empty.diagnostics_notes.append(
+                f"AI classification could not confidently identify this document's type -- "
+                f"review by hand; no transactions counted from this file.{alerts_suffix}"
+            )
+            return empty, {"document_type": "unknown", "payload": None}
+
+        bank_statement = structured.get("bank_statement") or {}
+        idp_data = FinancialDocumentData(
+            document_type="bank_or_receipt",
+            bank_or_vendor=bank_statement.get("bank_name") or f"AI-classified: {filename}",
+            statement_type="bank_statement",
+            bank_name=bank_statement.get("bank_name") or "AI-classified bank statement",
+            beginning_balance=bank_statement.get("opening_balance") or 0.0,
+            ending_balance=bank_statement.get("closing_balance") or 0.0,
+            total_deposits=bank_statement.get("total_deposits") or 0.0,
+            total_withdrawals=bank_statement.get("total_withdrawals") or 0.0,
+            transactions=[
+                TransactionItem(**tx) for tx in
+                bank_statement_payload_to_transactions(bank_statement, filename, self.categorizer)
+            ],
+        )
+
+        # Two independent signals, never the model's own self-reported
+        # "mathematically_balanced" alone: the same aggregate check every
+        # extraction strategy is held to, plus -- when the statement prints
+        # a running balance per row -- a per-row chain check, which is a
+        # strictly stronger signal (it would have caught Wells Fargo's
+        # misread running-balance-as-amount bug on its own, row by row,
+        # rather than only at the aggregate level).
+        aggregate_ok = self._extraction_looks_reliable(idp_data)
+        chain_ok = verify_bank_statement_balance_chain(bank_statement)
+        reliable = aggregate_ok if chain_ok is None else (aggregate_ok and chain_ok)
+
+        if not reliable:
+            idp_data.diagnostics_notes.append(
+                f"Unrecognized statement format; classified as a bank statement and extracted via "
+                f"AI, but did not pass independent verification (aggregate totals"
+                f"{' and per-row balance chain' if chain_ok is False else ''}) -- review by hand via "
+                f"Reconciliation QC.{alerts_suffix}"
+            )
+            return idp_data, None
+
+        idp_data.diagnostics_notes.append(
+            f"Unrecognized statement format -- classified as a bank statement "
+            f"({metadata.get('issuing_entity') or 'issuer not identified'}) and extracted via AI; "
+            f"reconciles against the statement's own declared totals"
+            f"{' and per-row balance chain' if chain_ok else ''}.{alerts_suffix}"
         )
 
         try:
             with pdfplumber.open(io.BytesIO(raw_bytes)) as pdf:
                 raw_text = "\n".join(self._extract_page_text(p) for p in pdf.pages)
             from core.bank_learner import learn_bank_profile
-            profile = learn_bank_profile(raw_text, llm_data, filename)
+            profile = learn_bank_profile(raw_text, idp_data, filename)
             if profile is not None:
                 reproduced = self._parse_general_or_scanned_pdf(
                     io.BytesIO(raw_bytes), filename, year, statement_end_month, profile=profile
                 )
-                if self._extraction_looks_reliable(reproduced) and self._sums_match(reproduced, llm_data):
+                if self._extraction_looks_reliable(reproduced) and self._sums_match(reproduced, idp_data):
                     save_bank_profile(profile)
-                    llm_data.diagnostics_notes.append(
+                    idp_data.diagnostics_notes.append(
                         f"Learned a reusable profile for this bank ('{profile.bank_slug}') -- "
-                        "future statements from it will be parsed for free, no LLM call needed."
+                        "future statements from it will be parsed for free, no AI call needed."
                     )
                     # The local save above only lasts for this running
                     # instance -- Streamlit Cloud's filesystem is ephemeral
@@ -1167,12 +1269,12 @@ class BankPDFParser:
                     try:
                         from core.github_profile_sync import commit_profile_to_github
                         if commit_profile_to_github(profile):
-                            llm_data.diagnostics_notes.append(
+                            idp_data.diagnostics_notes.append(
                                 f"Committed the learned profile to GitHub "
                                 f"(bank_profiles/{profile.bank_slug}.json) so it survives the next deploy."
                             )
                         else:
-                            llm_data.diagnostics_notes.append(
+                            idp_data.diagnostics_notes.append(
                                 "Could not commit the learned profile to GitHub (no GITHUB_TOKEN "
                                 "configured, or the request failed) -- it will keep working for the "
                                 "rest of this running instance, but may need to be re-learned after "
@@ -1183,4 +1285,4 @@ class BankPDFParser:
         except Exception:
             pass
 
-        return llm_data
+        return idp_data, None

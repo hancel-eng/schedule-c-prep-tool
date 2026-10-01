@@ -14,12 +14,13 @@ from core.question_generator import ClientQuestionGenerator
 from core.reconciliation import ReconciliationChecker
 from core.excel_exporter import ExcelWorkpaperExporter
 from core.answer_applier import apply_client_answers, ANSWER_OPTIONS, uncategorized_expense_answer_options
+from core.check_matcher import match_checks_to_transactions
 from theme import CSS, render_progress_steps
 
 # Bumped on every meaningful change to this file, so whoever is looking at the
 # app can tell which version is running just by glancing at the sidebar --
 # there is no separate deploy/build pipeline that would otherwise show that.
-APP_VERSION = "v10"
+APP_VERSION = "v11"
 
 # Page Configuration
 st.set_page_config(
@@ -49,7 +50,7 @@ def _get_app_password() -> str:
 def _get_openai_api_key() -> str:
     """Same "no secrets file at all" guard as _get_app_password(). Checked
     once at startup below, which also copies it into os.environ so
-    core/llm_extractor.py and core/bank_learner.py -- both framework-
+    core/idp_extractor.py and core/bank_learner.py -- both framework-
     agnostic, no Streamlit import -- can read it the ordinary way any
     OpenAI SDK code does."""
     try:
@@ -143,6 +144,12 @@ def _new_client_state(name: str = "") -> Dict[str, Any]:
         "reconciliation_results": [],
         "duplicates_flagged": [],
         "unique_file_count": 0,
+        # Populated only by the multiclass IDP escalation path (see
+        # core/pdf_parser.py's _recover_unrecognized_bank) when an
+        # unrecognized upload turns out not to be a bank statement at all.
+        "check_records": [],
+        "unmatched_check_records": [],
+        "supporting_documents": [],
     }
 
 
@@ -261,21 +268,25 @@ materiality_threshold = st.sidebar.number_input(
 )
 
 st.sidebar.markdown("---")
-st.sidebar.header("Unrecognized Statement Format")
+st.sidebar.header("AI Document Processing")
 if _openai_key:
     enable_llm_fallback = st.sidebar.checkbox(
-        "Use AI fallback for statements the rule-based parser can't read", value=True,
-        help="Only used when a statement's own section headers don't match any bank "
+        "Use AI for documents the rule-based parser can't read", value=True,
+        help="Only used when a document's own section headers don't match any bank "
              "this tool already knows (its extracted totals don't reconcile against "
              "what the statement declares) -- a normal Regions/Capital One/Chase "
-             "statement never reaches this. Costs a few cents per unrecognized file. "
-             "If it works, the bank's format is learned and reused for free afterward."
+             "statement never reaches this. Costs a few cents per such file. When it "
+             "runs, it first classifies the document (bank statement / check copy / "
+             "invoice / receipt) and extracts it accordingly -- a bank statement's "
+             "format is learned and reused for free afterward; a check copy's payee "
+             "gets matched to its \"Check #...\" line item; an invoice/receipt is kept "
+             "as a supporting document."
     )
 else:
     enable_llm_fallback = False
     st.sidebar.caption(
-        "No OPENAI_API_KEY configured -- an unrecognized statement format will be "
-        "flagged for manual review instead of an AI fallback. See "
+        "No OPENAI_API_KEY configured -- a document the rule-based parser can't read "
+        "will be flagged for manual review instead of processed by AI. See "
         "[.streamlit/secrets.toml.example](https://github.com/hancel-eng/schedule-c-prep-tool/blob/main/.streamlit/secrets.toml.example)."
     )
 
@@ -387,6 +398,14 @@ if uploaded_files or has_existing_data:
             diagnostics_log = []
             reconciler = ReconciliationChecker()
             reconciliation_results: List[Dict[str, Any]] = []
+            # Only ever populated by the multiclass IDP escalation path --
+            # see core/pdf_parser.py's _recover_unrecognized_bank. A
+            # standalone check copy or an invoice/receipt is never a bank
+            # statement, so it's kept out of parsed_transactions/
+            # reconciliation_results entirely rather than appearing there
+            # as a confusing "0 transactions, not reconcilable" entry.
+            check_records: List[Dict[str, Any]] = []
+            supporting_documents: List[Dict[str, Any]] = []
 
             for i, file_obj in enumerate(unique_files):
                 filename = file_obj.name
@@ -395,12 +414,24 @@ if uploaded_files or has_existing_data:
 
                 if filename.lower().endswith('.pdf'):
                     res = pdf_parser.parse_pdf(file_obj, filename)
-                    parsed_transactions.extend(res['transactions'])
-                    months_found.extend(res['months_found'])
-                    reconciliation_results.append(reconciler.check_document(
-                        filename, res['statement_summary'], res['transactions']
-                    ))
-                    diagnostics_log.append({"file": filename, "type": "PDF", "count": len(res['transactions']), "details": res.get('diagnostics')})
+                    doc_type = res.get('document_type', 'bank_statement')
+
+                    if doc_type == 'check' and res.get('check_record'):
+                        check_records.append({**res['check_record'], "source_file": filename})
+                        diagnostics_log.append({"file": filename, "type": "Check Copy", "count": 1, "details": res.get('diagnostics')})
+                    elif doc_type in ('invoice', 'receipt'):
+                        if res.get('supporting_document'):
+                            supporting_documents.append({**res['supporting_document'], "source_file": filename})
+                        diagnostics_log.append({"file": filename, "type": doc_type.title(), "count": 1, "details": res.get('diagnostics')})
+                    elif doc_type == 'unknown':
+                        diagnostics_log.append({"file": filename, "type": "Unknown", "count": 0, "details": res.get('diagnostics')})
+                    else:
+                        parsed_transactions.extend(res['transactions'])
+                        months_found.extend(res['months_found'])
+                        reconciliation_results.append(reconciler.check_document(
+                            filename, res['statement_summary'], res['transactions']
+                        ))
+                        diagnostics_log.append({"file": filename, "type": "PDF", "count": len(res['transactions']), "details": res.get('diagnostics')})
 
                 elif filename.lower().endswith(('.xlsx', '.xls', '.csv')):
                     res = sheet_parser.parse_spreadsheet(file_obj, filename)
@@ -408,6 +439,12 @@ if uploaded_files or has_existing_data:
                     diagnostics_log.append({"file": filename, "type": "Spreadsheet", "count": len(res['transactions']), "details": res.get('diagnostics')})
 
             file_progress_slot.empty()
+
+            # Fill in the payee on every "Check #NNNN" line item the
+            # statements above produced, using whatever check copies were
+            # uploaded alongside them -- raised directly: "las copias de
+            # cheques son necesarias, para saber quién fue el proveedor."
+            matched_count, unmatched_checks = match_checks_to_transactions(check_records, parsed_transactions)
 
             mark_steps("coverage", f"{len(parsed_transactions):,} transactions from {len(unique_files)} file(s)")
             coverage_info = pdf_parser.check_12_month_coverage(months_found)
@@ -428,6 +465,9 @@ if uploaded_files or has_existing_data:
             client_state["reconciliation_results"] = reconciliation_results
             client_state["duplicates_flagged"] = duplicates_flagged
             client_state["unique_file_count"] = len(unique_files)
+            client_state["check_records"] = check_records
+            client_state["unmatched_check_records"] = unmatched_checks
+            client_state["supporting_documents"] = supporting_documents
 
         # Rerun into the branch below on a clean script run, rather than
         # falling through inline -- the rest of the page always reads from
@@ -444,6 +484,9 @@ if uploaded_files or has_existing_data:
     reconciliation_results = client_state["reconciliation_results"]
     duplicates_flagged = client_state["duplicates_flagged"]
     correction_log = client_state["correction_log"]
+    check_records = client_state["check_records"]
+    unmatched_check_records = client_state["unmatched_check_records"]
+    supporting_documents = client_state["supporting_documents"]
     recon_status = reconciliation_summary['status']
 
     if uploaded_files:
@@ -629,11 +672,18 @@ if uploaded_files or has_existing_data:
     # lists that duplicate what Client Questions already makes actionable)
     # is real but not needed on every run -- tucked behind the audit
     # expander below instead of competing for attention up here.
-    tab_questions, tab_summary, tab_nonpnl = st.tabs([
-        "Client Inquiry Questions",
-        "Schedule C Summary",
-        "Non-P&L Transfers",
-    ])
+    #
+    # "Supporting Documents" only appears when there's actually something in
+    # it (a check copy or invoice/receipt was uploaded this run) -- staying
+    # true to the same declutter principle as the audit expander: nothing
+    # competes for attention unless it's relevant to this client.
+    has_supporting_docs = bool(check_records or unmatched_check_records or supporting_documents)
+    tab_labels = ["Client Inquiry Questions", "Schedule C Summary", "Non-P&L Transfers"]
+    if has_supporting_docs:
+        tab_labels.append("Supporting Documents")
+    tabs = st.tabs(tab_labels)
+    tab_questions, tab_summary, tab_nonpnl = tabs[0], tabs[1], tabs[2]
+    tab_supporting = tabs[3] if has_supporting_docs else None
 
     with tab_questions:
         st.caption(
@@ -841,6 +891,57 @@ if uploaded_files or has_existing_data:
             st.dataframe(pd.DataFrame(exceptions['non_pnl_transfers'])[['date', 'payee', 'amount', 'category', 'source_file']], use_container_width=True, height=450)
         else:
             st.caption("Nothing excluded from this run.")
+
+    if tab_supporting is not None:
+        with tab_supporting:
+            st.markdown("#### Check Copies, Invoices & Receipts")
+            st.caption(
+                "These were uploaded alongside the bank/credit-card statements but aren't "
+                "statements themselves -- a standalone check-copy report, an invoice, or a "
+                "receipt. None of this counts toward Gross Receipts or Total Expenses; a check "
+                "copy's only job is to supply the payee name for its matching \"Check #...\" line "
+                "item in the Schedule C Summary above, which a bank statement's own cleared-"
+                "checks listing never prints."
+            )
+
+            if check_records or unmatched_check_records:
+                st.markdown(f"**Check copies matched to a statement line item ({len(check_records) - len(unmatched_check_records)} of {len(check_records)}):**")
+                if check_records:
+                    st.dataframe(
+                        pd.DataFrame(check_records)[
+                            [c for c in ["check_number", "payee", "drawer", "numerical_amount", "issue_date", "source_file"]
+                             if c in pd.DataFrame(check_records).columns]
+                        ],
+                        use_container_width=True, hide_index=True,
+                    )
+                if unmatched_check_records:
+                    st.warning(
+                        f"**{len(unmatched_check_records)} check copy(ies) couldn't be matched** to a "
+                        "line item in any uploaded statement (no check with that number/amount was "
+                        "found) -- the payee is known, but it isn't reflected anywhere in the "
+                        "workpaper yet. Verify by hand."
+                    )
+                    st.dataframe(
+                        pd.DataFrame(unmatched_check_records)[
+                            [c for c in ["check_number", "payee", "numerical_amount", "issue_date", "source_file"]
+                             if c in pd.DataFrame(unmatched_check_records).columns]
+                        ],
+                        use_container_width=True, hide_index=True,
+                    )
+
+            if supporting_documents:
+                st.markdown(f"**Invoices & receipts ({len(supporting_documents)}):**")
+                st.caption(
+                    "Shown for reference only -- not matched against transactions automatically. "
+                    "Use these to verify an expense's business purpose or amount by hand."
+                )
+                st.dataframe(
+                    pd.DataFrame(supporting_documents)[
+                        [c for c in ["type", "issuer", "document_number", "date", "total", "source_file"]
+                         if c in pd.DataFrame(supporting_documents).columns]
+                    ],
+                    use_container_width=True, hide_index=True,
+                )
 
     # ----------------------------------------------------
     # AUDIT DETAIL -- everything true, just not needed every run. Collapsed

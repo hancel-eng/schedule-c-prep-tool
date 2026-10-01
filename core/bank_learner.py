@@ -18,7 +18,7 @@ from typing import Optional
 from core.bank_profiles import BankProfile
 from core.pdf_parser import FinancialDocumentData
 
-# Same tier as core/llm_extractor.py, for the same reason: identifying
+# Same tier as core/idp_extractor.py, for the same reason: identifying
 # header phrases in text already given to it is a pattern-matching task,
 # not one that needs the flagship tier.
 LLM_MODEL = "gpt-6-luna"
