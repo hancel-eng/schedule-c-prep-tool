@@ -202,6 +202,37 @@ div[data-testid="stAlertContentInfo"]    { background: var(--ts-surface-alt); bo
   border-radius: var(--ts-r-md); box-shadow: none;
 }
 [data-testid="stExpander"] summary p { color: var(--ts-text-muted); font-size: 15px; font-weight: 400; }
+/* Streamlit's password eye toggle has no hover text of its own. Its
+   aria-label flips between "Show password" and "Hide password", so a
+   CSS-only tooltip keyed off that label stays correct with no JS. */
+[data-testid="stTextInputRootElement"] button[aria-label$="password"] {
+  position: relative;
+}
+[data-testid="stTextInputRootElement"] button[aria-label$="password"]:hover::after,
+[data-testid="stTextInputRootElement"] button[aria-label$="password"]:focus-visible::after {
+  position: absolute;
+  top: 50%;
+  right: calc(100% + 4px);
+  transform: translateY(-50%);
+  padding: 3px 8px;
+  border-radius: var(--ts-r-sm);
+  background: var(--ts-ink);
+  color: #FFFFFF;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.3;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 1000;
+}
+[data-testid="stTextInputRootElement"] button[aria-label="Show password"]:hover::after,
+[data-testid="stTextInputRootElement"] button[aria-label="Show password"]:focus-visible::after {
+  content: "Show";
+}
+[data-testid="stTextInputRootElement"] button[aria-label="Hide password"]:hover::after,
+[data-testid="stTextInputRootElement"] button[aria-label="Hide password"]:focus-visible::after {
+  content: "Hide";
+}
 </style>
 """
 
