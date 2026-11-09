@@ -108,33 +108,28 @@ shows a warning on the login screen and nobody can get in.
 
 ## How to use it
 
-1. **Sidebar → Clients** — pick which client you're working on, or click
-   **+ New Client**. Every client's work is saved automatically — see
-   [Saved work](#saved-work) below.
-2. **Fill in that client's metadata** — name, the tax year, the fixed-asset
-   ("de minimis") dollar threshold, and the client-question materiality
-   threshold (a vendor whose total spend doesn't clear this amount gets no
-   question at all — leave it at $0 to ask about everything).
-3. **Upload** — the client's statements and other documents for the tax
-   year, then click **Read**. You can add more files later; a file with
-   the same name as one already uploaded is skipped. Don't upload a P&L
-   summary *alongside* the statements it summarizes — that counts the same
-   money twice. Use one or the other.
-4. **Wait, or press Stop.** Files are read a few parts at a time and every
-   part is saved as soon as it's read. **Stop** pauses; **Continue
-   reading** picks up where it left off, even after closing the page.
-5. **Fix Statements** (the first tab) — fix anything that doesn't add up.
-6. **Review "Client Inquiry Questions"** — each open question has an
-   **Answer** dropdown with a fixed set of choices, never a free-text box,
-   so the tool is never guessing what you meant.
-7. **Send the questions to the client**, however you normally do that.
-8. **Enter the client's answers** in the same Answer column and click
-   **Apply Client Answers & Recalculate Workpaper** — everything updates
-   immediately, and an answered question won't come back. If several rows
-   share the same answer (e.g. "these are all personal transfers"), check
-   their boxes and use the bulk-answer control under the table instead of
-   picking the same answer row by row.
-9. **Download the Excel workpaper.**
+The screen shows one step at a time. At the top, a **What to do next**
+card always says what needs attention, and four big buttons switch steps:
+
+1. **Sidebar → Clients** — pick the client, or click **+ New client**.
+   Under **About this client**, check the name and tax year. **More
+   settings** holds the equipment (de minimis) amount and the smallest
+   vendor total worth a question.
+2. **1 · Add files** — drop the client's statements and other documents
+   for the tax year, then click **Read**. Files are read a few parts at a
+   time and every part is saved as soon as it's read. **Stop for now**
+   pauses; **Continue reading** picks up where it left off, even after
+   closing the page. You can add more files later. Don't add a P&L summary
+   *alongside* the statements it summarizes — that counts the same money
+   twice.
+3. **2 · Check numbers** — fix any statement that doesn't add up.
+4. **3 · Questions** — send the questions to the client however you
+   normally do. When they answer, pick each answer in the **Answer**
+   column (a fixed list, never free text) and press **Save answers**.
+   Several rows with the same answer: check their boxes and use **Same
+   answer for all checked rows**.
+5. **4 · Results & download** — the totals, how they were worked out,
+   each tax form line, and **Download the Excel workpaper**.
 
 ## Saved work
 
@@ -198,7 +193,7 @@ at the same moment would overwrite each other's last change.
 
 ```
 app.py                        The app itself (Streamlit)
-fix_statements_ui.py          The "Fix Statements" tab (hand corrections)
+fix_statements_ui.py          The "Check numbers" step (hand corrections)
 theme.py                      Visual design (colors, fonts, layout)
 .streamlit/config.toml        Streamlit's own theme settings
 
@@ -244,7 +239,7 @@ After reading, plain rules check each statement against its own printed
 numbers (starting balance, ending balance, summary totals, and the balance
 on each row) and explain in plain words anything that doesn't add up.
 
-If a statement doesn't add up, open the **Fix Statements** tab: change
+If a statement doesn't add up, open **2 · Check numbers**: change
 the printed balances or totals, edit, add, or delete rows, and see right
 away whether it adds up before saving. Every fix is logged (also in the
 Excel sheet *Manual Corrections*) and can be undone back to what the AI
@@ -283,7 +278,7 @@ check number first, amount only as a fallback and only when it uniquely
 points to one still-unlabeled check — two checks for the same amount is
 common enough (rent, a recurring vendor) that guessing would be worse than
 leaving both unmatched. Anything that couldn't be matched with confidence
-shows up in the **Supporting Documents** tab, flagged for manual review —
+shows up under **Results → Check copies, receipts, and invoices**, flagged for manual review —
 never silently attached to the wrong transaction.
 
 ## Known limitations & roadmap
@@ -296,8 +291,8 @@ never silently attached to the wrong transaction.
 - **Transfers between a client's own accounts, across two different
   uploaded files,** are only caught when the transaction's own description
   makes it obvious. There's no cross-file matching by date and amount yet.
-- **Not yet built:** the plain-language redesign, the last step of the
-  AI-first rebuild.
+- **Not yet verified:** a real OpenAI run through the new saved, step-by-step
+  reading, and Streamlit Cloud with `DATABASE_URL` set.
 
 See **[CHANGELOG.md](CHANGELOG.md)** for everything that's already been
 found and fixed.

@@ -8,6 +8,34 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for how the current system works,
 and [README.md](README.md#known-limitations--roadmap) for what's still
 open.
 
+## 2026-11-09 — Simple, plain-language redesign (AI-first rebuild, step 6)
+
+Requested by the client: very intuitive and simple, "as if for a child or
+an elderly person", in plain everyday words; colors and animation allowed.
+
+- One step on screen at a time: **1 · Add files**, **2 · Check numbers**,
+  **3 · Questions**, **4 · Results & download**, each showing its status,
+  under a **What to do next** card that always says what needs attention.
+- New look: Atkinson Hyperlegible Next (made for low-vision readers) at
+  18px, big buttons, a deep pine sidebar, color only for done / needs you /
+  problem, a pulsing dot while reading. The app is now called "Schedule C
+  Helper".
+- Plain words everywhere ("Business income (Line 1)", "Is this a business
+  expense?", "Save answers", "Stop for now"); the old dashboard metrics,
+  tabs, and audit expander became the Results step with "How these numbers
+  were worked out" and "Details for experts".
+- Found while testing in the browser: big amounts were cut off ("$6,…") —
+  now HTML cards; the Answer column was off screen on narrow windows — now
+  right after who and how much; while reading, the Stop button looked
+  disabled (Streamlit greys out the previous page) — now kept visible; the
+  part counter restarted at 0 after each file — now counts the whole
+  reading session; listing missing months crashed (month numbers, not
+  names) — fixed; the sidebar opened over the page on phones — now closed
+  on phones.
+- Verified in the browser with a fake AI: reading, a failed file with Try
+  again, the four steps, answering a question in the grid and saving it
+  (still there after a reload), and a phone-width layout.
+
 ## 2026-11-09 — Saved work, reading in steps, and a Stop button (AI-first rebuild, step 5)
 
 Requested by the client: progress must be saved and never lost, files must

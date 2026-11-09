@@ -1,4 +1,4 @@
-"""The "Fix Statements" tab: correct by hand anything that doesn't add up,
+"""The "Check numbers" step: correct by hand anything that doesn't add up,
 without uploading anything again. All the logic lives in core/workpaper.py
 and core/document_rules.py; this file only draws it."""
 from datetime import date

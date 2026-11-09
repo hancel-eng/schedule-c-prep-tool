@@ -1,271 +1,229 @@
-"""Design tokens and injected CSS for the TaxSavers visual identity.
+"""Look and feel. Pure presentation: nothing here touches core/.
 
-Pure presentation. Nothing here touches parsing, categorization, or any
-business logic in core/ -- app.py imports CSS and injects it once, plus
-calls render_progress() for the processing-status panel's markup.
+Made for people who don't want to learn software: one typeface built for
+easy reading (Atkinson Hyperlegible Next, designed for low-vision
+readers), large text (18px), strong contrast, big buttons, one step on
+screen at a time, and color used only to say "done", "needs you", or
+"problem". A single light theme on purpose: the colors are painted
+explicitly so the page looks the same on any computer.
 
-Brand: olive green from the TaxSavers (Wilson Tax & Accounting LLC) logo
-over cream, warm neutrals, dark green ink for hierarchy surfaces. Boutique
-accounting register, not generic SaaS.
+app.py injects CSS once and uses the small HTML helpers below.
 """
+import html
 
 CSS = """
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Source+Serif+4:wght@400;600;700&family=Source+Sans+3:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Next:wght@400;600;700;800&display=swap');
 
 :root {
-  --ts-primary: #5C8727;
-  --ts-primary-hover: #4B6F1F;
-  --ts-primary-active: #3D5A18;
-  --ts-primary-tint: #EEF3E4;
-  --ts-ink: #2E4230;
-  --ts-accent: #8A6A2F;
-  --ts-bg: #F7F5EF;
+  --ts-ground: #F3F6F3;
   --ts-surface: #FFFFFF;
-  --ts-surface-alt: #F1EEE4;
-  --ts-text: #23261F;
-  --ts-text-muted: #6B7065;
-  --ts-border: #DCD8CB;
-  --ts-border-strong: #C3BEAD;
-  --ts-success: #3F7D33;  --ts-success-bg: #EAF2E6;
-  --ts-warning: #B07A16;  --ts-warning-bg: #FAF2DF;
-  --ts-error:   #A6382F;  --ts-error-bg:   #F8EAE7;
-  --ts-r-sm: 4px; --ts-r-md: 6px; --ts-r-lg: 10px;
-  --ts-s1: 4px; --ts-s2: 8px; --ts-s3: 12px; --ts-s4: 16px;
-  --ts-s5: 24px; --ts-s6: 32px; --ts-s7: 48px;
-  --ts-row-h: 40px;
-  --ts-shadow-1: 0 1px 2px rgba(35,38,31,.06);
-  --ts-shadow-2: 0 4px 12px rgba(35,38,31,.10);
+  --ts-surface-soft: #EAF0EC;
+  --ts-ink: #12352E;            /* sidebar, reading panel */
+  --ts-ink-soft: #1C4A40;
+  --ts-primary: #1D6F52;        /* buttons, "done" */
+  --ts-primary-hover: #165A42;
+  --ts-primary-tint: #E2F0E9;
+  --ts-text: #17211E;
+  --ts-text-muted: #45534D;
+  --ts-border: #D3DDD7;
+  --ts-border-strong: #A9B8B0;
+  --ts-done: #1D6F52;     --ts-done-bg: #E2F0E9;
+  --ts-attention: #8A4B00; --ts-attention-bg: #FFF1D6; --ts-attention-line: #E19A2B;
+  --ts-problem: #A3241A;  --ts-problem-bg: #FCEBE8;  --ts-problem-line: #D9534A;
+  --ts-r-sm: 8px; --ts-r-md: 12px; --ts-r-lg: 18px;
+  --ts-shadow: 0 1px 2px rgba(18,53,46,.06), 0 6px 20px rgba(18,53,46,.06);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --ts-primary: #8FB94F;
-    --ts-primary-hover: #A3C868;
-    --ts-primary-active: #7BA43D;
-    --ts-primary-tint: #2A3320;
-    --ts-ink: #22331F;
-    --ts-accent: #C09A55;
-    --ts-bg: #161814;
-    --ts-surface: #1E211B;
-    --ts-surface-alt: #262A22;
-    --ts-text: #EDEBE2;
-    --ts-text-muted: #9CA192;
-    --ts-border: #343A2E;
-    --ts-border-strong: #47503C;
-    --ts-success: #6FA85C;  --ts-success-bg: #1F2A1B;
-    --ts-warning: #D9A93F;  --ts-warning-bg: #2B2415;
-    --ts-error:   #D9705F;  --ts-error-bg:   #2C1A17;
-  }
+/* base: one readable face, bigger text */
+html, body, .stApp, [class*="css"], button, input, textarea, select {
+  font-family: 'Atkinson Hyperlegible Next', 'Segoe UI', system-ui, sans-serif;
 }
-
-/* base */
-html, body, [class*="css"] { font-family: 'Source Sans 3', system-ui, sans-serif; }
-.stApp { background: var(--ts-bg); color: var(--ts-text); }
-.block-container { padding-top: var(--ts-s7); max-width: 1240px; }
-h1, h2, h3 { font-family: 'Source Serif 4', Georgia, serif; font-weight: 600; letter-spacing: -.01em; }
-h1 { font-size: 32px; }
-h2 { font-size: 20px; margin-top: var(--ts-s6); }
+.stApp { background: var(--ts-ground); color: var(--ts-text); }
+.stApp p, .stApp li, .stApp label, .stApp input { font-size: 18px; line-height: 1.55; }
+.block-container { padding-top: 40px; max-width: 1120px; }
+h1, h2, h3, h4 { font-family: 'Atkinson Hyperlegible Next', system-ui, sans-serif; font-weight: 800;
+  letter-spacing: -.01em; color: var(--ts-text); text-wrap: balance; }
+h1 { font-size: 34px; }
+h2 { font-size: 26px; }
+h3 { font-size: 22px; }
+[data-testid="stCaptionContainer"] p { font-size: 16px; color: var(--ts-text-muted); }
 
 /* sidebar */
-[data-testid="stSidebar"] { background: var(--ts-ink); border-right: 1px solid var(--ts-border); }
-[data-testid="stSidebar"] * { color: #F3F1E9; }
+[data-testid="stSidebar"] { background: var(--ts-ink); }
+[data-testid="stSidebar"] * { color: #F1F6F3; }
+[data-testid="stSidebar"] h2 { font-size: 20px; margin-top: 8px; }
 [data-testid="stSidebar"] .stTextInput input,
 [data-testid="stSidebar"] .stNumberInput input {
-  background: #354B36; border: 1px solid #4A6049; color: #F3F1E9; border-radius: var(--ts-r-sm);
+  background: var(--ts-ink-soft); border: 1px solid #3C6B5F; color: #F1F6F3;
 }
-/* A secondary button ("+ New Client") keeps its light surface/dark-text
-   styling from the generic button rule below -- but `[data-testid="stSidebar"]
-   *` above repaints every descendant it matches, including the <p> Streamlit
-   renders the button's own label text inside, which sits *inside* the
-   button and gets matched directly (inheritance never wins against a rule
-   that targets the element itself, no matter how much weaker that rule
-   looks). Re-asserting the dark color on the label text explicitly, scoped
-   to just the sidebar's secondary buttons, is what actually wins here. */
+[data-testid="stSidebar"] [data-baseweb="select"] > div { background: var(--ts-ink-soft); border-color: #3C6B5F; }
 [data-testid="stSidebar"] .stButton > button[kind="secondary"],
-[data-testid="stSidebar"] .stButton > button[kind="secondary"] * {
-  color: var(--ts-text);
+[data-testid="stSidebar"] .stButton > button[kind="secondary"] *,
+[data-testid="stSidebar"] [data-testid="stPopover"] button,
+[data-testid="stSidebar"] [data-testid="stPopover"] button * {
+  color: var(--ts-text); background: #F1F6F3;
 }
+[data-testid="stSidebar"] [data-testid="stExpander"] { background: var(--ts-ink-soft); border-color: #3C6B5F; }
+[data-testid="stSidebar"] [data-testid="stExpander"] summary p { color: #F1F6F3; }
+[data-testid="stPopoverBody"] *, [data-testid="stPopoverBody"] p { color: var(--ts-text); }
 
-/* metricas */
-[data-testid="stMetric"] {
-  background: var(--ts-surface);
-  border: 1px solid var(--ts-border);
-  border-top: 3px solid var(--ts-border-strong);
-  border-radius: var(--ts-r-md);
-  padding: 18px 20px;
-  box-shadow: var(--ts-shadow-1);
+/* buttons: big, plain */
+.stButton > button, .stDownloadButton > button, .stFormSubmitButton > button,
+[data-testid="stPopover"] > div > button {
+  border-radius: var(--ts-r-sm); font-weight: 700; min-height: 48px; padding: 10px 22px;
+  transition: background .15s ease, transform .1s ease;
 }
-[data-testid="stMetricLabel"] p {
-  font-size: 12px; font-weight: 700; letter-spacing: .09em;
-  text-transform: uppercase; color: var(--ts-text-muted);
+.stButton > button p, .stDownloadButton > button p, [data-testid="stPopover"] button p { font-size: 18px !important; font-weight: 700 !important; }
+.stButton > button[kind="primary"], .stDownloadButton > button {
+  background: var(--ts-primary); border: 1px solid var(--ts-primary); color: #FFFFFF;
 }
-[data-testid="stMetricValue"] {
-  font-family: 'Source Serif 4', Georgia, serif;
-  font-size: 36px; font-weight: 600; font-variant-numeric: tabular-nums;
-  color: var(--ts-text); line-height: 1.05;
-}
-/* la 4a metrica (Client Questions) es la que dispara la accion */
-div[data-testid="stColumn"]:nth-of-type(4) [data-testid="stMetric"] {
-  background: var(--ts-primary-tint);
-  border-color: #C7D6AE;
-  border-top-color: var(--ts-primary);
-}
+.stButton > button[kind="primary"] *, .stDownloadButton > button * { color: #FFFFFF; }
+.stButton > button[kind="primary"]:hover, .stDownloadButton > button:hover { background: var(--ts-primary-hover); }
+.stButton > button:active, .stDownloadButton > button:active { transform: translateY(1px); }
+.stButton > button[kind="secondary"] { background: var(--ts-surface); border: 1.5px solid var(--ts-border-strong); color: var(--ts-text); }
+.stButton > button[kind="secondary"]:hover { background: var(--ts-surface-soft); border-color: var(--ts-primary); }
+.stButton > button:disabled { opacity: .45; }
+:focus-visible { outline: 3px solid #E19A2B !important; outline-offset: 2px; }
 
-/* tabs */
-.stTabs [data-baseweb="tab-list"] { gap: var(--ts-s1); border-bottom: 2px solid var(--ts-border); }
-.stTabs [data-baseweb="tab"] {
-  height: 44px; padding: 0 18px; color: var(--ts-text-muted);
-  border-radius: var(--ts-r-md) var(--ts-r-md) 0 0; font-weight: 600;
+/* the step picker: four big buttons in a row */
+.st-key-ts_steps [data-testid="stButtonGroup"] { width: 100%; }
+.st-key-ts_steps [data-testid="stButtonGroup"] > div { display: grid !important;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; width: 100%; }
+.st-key-ts_steps button {
+  min-height: 64px; width: 100%; justify-content: flex-start; text-align: left;
+  border-radius: var(--ts-r-md) !important; border: 1.5px solid var(--ts-border) !important;
+  background: var(--ts-surface) !important; box-shadow: var(--ts-shadow); padding: 10px 16px !important;
 }
-.stTabs [aria-selected="true"] {
-  background: var(--ts-primary-tint); color: #3D5A18;
-  box-shadow: inset 0 -2px 0 var(--ts-primary);
+.st-key-ts_steps button p { font-size: 18px !important; font-weight: 700; color: var(--ts-text) !important;
+  white-space: normal !important; overflow: visible !important; text-overflow: clip !important; text-align: center; }
+.st-key-ts_steps button[kind="segmented_controlActive"], .st-key-ts_steps button[aria-checked="true"] {
+  background: var(--ts-ink) !important; border-color: var(--ts-ink) !important;
 }
+.st-key-ts_steps button[kind="segmented_controlActive"] p, .st-key-ts_steps button[aria-checked="true"] p { color: #FFFFFF !important; }
 
-/* tablas y data editor -- st.dataframe/st.data_editor paint their contents
-   on <canvas> (Glide Data Grid), not as styleable DOM text: [role="columnheader"]
-   and [role="gridcell"] nodes exist for accessibility/hit-testing, but a CSS
-   `color` rule on them never reaches the canvas paint pass. Confirmed live:
-   setting color here left header text unreadable against a dark background,
-   because the canvas always draws with the app's global textColor. The header
-   background IS controllable (dataframeHeaderBackgroundColor in
-   .streamlit/config.toml, read directly by the grid's theme builder), so the
-   fix is a light header tint that reads correctly against the fixed dark
-   text, not a text-color override -- there is no such key in this Streamlit
-   version (confirmed against the full theme option list in config.py). */
+/* "What to do next" card */
+.ts-next { display: flex; gap: 18px; align-items: flex-start; background: var(--ts-surface);
+  border: 1.5px solid var(--ts-border); border-radius: var(--ts-r-lg); padding: 20px 24px;
+  box-shadow: var(--ts-shadow); }
+.ts-next-icon { flex: none; width: 48px; height: 48px; border-radius: 50%; display: grid; place-items: center;
+  font-size: 24px; font-weight: 800; }
+.ts-next.done .ts-next-icon { background: var(--ts-done-bg); color: var(--ts-done); }
+.ts-next.attention .ts-next-icon { background: var(--ts-attention-bg); color: var(--ts-attention); }
+.ts-next.problem .ts-next-icon { background: var(--ts-problem-bg); color: var(--ts-problem); }
+.ts-next.attention { border-color: var(--ts-attention-line); }
+.ts-next.problem { border-color: var(--ts-problem-line); }
+.ts-next-label { font-size: 14px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--ts-text-muted); }
+.ts-next-title { font-size: 22px; font-weight: 800; line-height: 1.3; margin-top: 2px; }
+.ts-next-text { font-size: 18px; color: var(--ts-text-muted); margin-top: 4px; }
+
+/* number cards (replace st.metric so big amounts never get cut off) */
+.ts-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px; margin: 6px 0 18px; }
+.ts-card { background: var(--ts-surface); border: 1.5px solid var(--ts-border); border-radius: var(--ts-r-md);
+  padding: 18px 20px; box-shadow: var(--ts-shadow); }
+.ts-card-label { font-size: 16px; font-weight: 700; color: var(--ts-text-muted); }
+.ts-card-value { font-size: clamp(26px, 3.2vw, 34px); font-weight: 800; font-variant-numeric: tabular-nums;
+  line-height: 1.15; margin-top: 6px; overflow-wrap: anywhere; }
+.ts-card-note { font-size: 15px; color: var(--ts-text-muted); margin-top: 4px; }
+.ts-card.highlight { background: var(--ts-ink); border-color: var(--ts-ink); }
+.ts-card.highlight .ts-card-label, .ts-card.highlight .ts-card-note { color: #BFD6CC; }
+.ts-card.highlight .ts-card-value { color: #FFFFFF; }
+
+/* status pills inside text */
+.ts-pill { display: inline-block; padding: 2px 12px; border-radius: 999px; font-size: 15px; font-weight: 700; }
+.ts-pill.done { background: var(--ts-done-bg); color: var(--ts-done); }
+.ts-pill.attention { background: var(--ts-attention-bg); color: var(--ts-attention); }
+.ts-pill.problem { background: var(--ts-problem-bg); color: var(--ts-problem); }
+
+/* banners: Streamlit's own alert colors, just rounder */
+[data-testid="stAlert"] { border-radius: var(--ts-r-md); }
+
+/* tables */
 [data-testid="stDataFrame"], [data-testid="stDataFrameResizable"] {
-  border: 1px solid var(--ts-border); border-radius: var(--ts-r-md);
-  overflow: hidden; box-shadow: var(--ts-shadow-1);
+  border: 1.5px solid var(--ts-border); border-radius: var(--ts-r-md); overflow: hidden;
 }
-[data-testid="stDataFrame"] [role="gridcell"] {
-  font-size: 14px; font-variant-numeric: tabular-nums;
-  border-bottom: 1px solid #E8E4D8;
-}
-[data-testid="stDataFrame"] [role="row"]:hover [role="gridcell"] { background: var(--ts-primary-tint); }
 
-/* botones */
-.stButton > button, .stDownloadButton > button, .stFormSubmitButton > button {
-  border-radius: var(--ts-r-sm); font-weight: 600; font-size: 15px;
-  padding: 9px 20px; min-height: 40px; border: 1px solid transparent; transition: background .12s;
-}
-.stButton > button[kind="primary"], .stFormSubmitButton > button {
-  background: var(--ts-primary); color: #FFFFFF;
-}
-.stButton > button[kind="primary"]:hover, .stFormSubmitButton > button:hover {
-  background: var(--ts-primary-hover);
-}
-.stButton > button[kind="primary"]:active { background: var(--ts-primary-active); }
-.stDownloadButton > button { background: var(--ts-ink); color: #F3F1E9; }
-.stDownloadButton > button:hover { background: #23331F; }
-.stButton > button[kind="secondary"] {
-  background: var(--ts-surface); color: var(--ts-text); border-color: var(--ts-border-strong);
-}
-.stButton > button[kind="secondary"]:hover { background: var(--ts-surface-alt); }
-:focus-visible { outline: 2px solid var(--ts-primary); outline-offset: 2px; }
-
-/* banners */
-[data-testid="stAlert"] { border-radius: var(--ts-r-md); border: 1px solid var(--ts-border); padding: 14px 18px; }
-[data-testid="stAlert"][data-baseweb="notification"] { box-shadow: none; }
-div[data-testid="stAlertContentSuccess"] { background: var(--ts-success-bg); border-left: 4px solid var(--ts-success); }
-div[data-testid="stAlertContentWarning"] { background: var(--ts-warning-bg); border-left: 4px solid var(--ts-warning); }
-div[data-testid="stAlertContentError"]   { background: var(--ts-error-bg);   border-left: 4px solid var(--ts-error); }
-div[data-testid="stAlertContentInfo"]    { background: var(--ts-surface-alt); border-left: 4px solid var(--ts-text-muted); }
-
-/* uploader */
+/* uploader: a big friendly drop area */
 [data-testid="stFileUploaderDropzone"] {
-  background: var(--ts-surface); border: 1.5px dashed var(--ts-border-strong);
-  border-radius: var(--ts-r-lg); padding: var(--ts-s6);
+  background: var(--ts-surface); border: 2px dashed var(--ts-border-strong);
+  border-radius: var(--ts-r-lg); padding: 36px 28px; transition: background .15s, border-color .15s;
 }
 [data-testid="stFileUploaderDropzone"]:hover { border-color: var(--ts-primary); background: var(--ts-primary-tint); }
 
-/* panel de progreso: st.container(key="ts_progress_panel") en app.py genera
-   la clase .st-key-ts_progress_panel en el div real que envuelve a los
-   widgets hijos (barra de progreso incluida) -- a diferencia de un div
-   suelto inyectado por st.markdown, que queda como hermano, no padre. */
-.st-key-ts_progress_panel {
-  background: var(--ts-ink); color: #F3F1E9;
-  border-radius: var(--ts-r-lg); padding: 28px 30px;
-}
-.st-key-ts_progress_panel .stProgress > div > div > div { background: #8FB94F; }
-.st-key-ts_progress_panel .stProgress > div > div { background: #22331F; height: 6px; border-radius: 3px; }
-.ts-step { display: flex; gap: 14px; align-items: flex-start; padding-bottom: 18px; }
-.ts-step-dot { width: 22px; height: 22px; border-radius: 50%; border: 2px solid #4A6049; flex: none; }
-.ts-step-dot.done { background: #8FB94F; border-color: #8FB94F; color: #1D2A16; text-align: center; font-weight: 700; font-size: 13px; line-height: 18px; }
-.ts-step-dot.active { border-color: #8FB94F; }
-.ts-step-title { font-weight: 600; }
-.ts-step-meta { font-size: 13.5px; color: #A8B8A2; }
+/* expanders: quiet "more detail" boxes */
+[data-testid="stExpander"] { background: var(--ts-surface); border: 1.5px solid var(--ts-border); border-radius: var(--ts-r-md); }
+[data-testid="stExpander"] summary p { font-size: 18px; font-weight: 700; }
 
-/* expander de auditoria: secundario, sin sombra */
-[data-testid="stExpander"] {
-  background: var(--ts-surface-alt); border: 1px solid var(--ts-border);
-  border-radius: var(--ts-r-md); box-shadow: none;
-}
-[data-testid="stExpander"] summary p { color: var(--ts-text-muted); font-size: 15px; font-weight: 400; }
-/* Streamlit's password eye toggle has no hover text of its own. Its
-   aria-label flips between "Show password" and "Hide password", so a
-   CSS-only tooltip keyed off that label stays correct with no JS. */
-[data-testid="stTextInputRootElement"] button[aria-label$="password"] {
-  position: relative;
-}
+/* tabs (only used inside the experts' detail box) */
+.stTabs [data-baseweb="tab"] p { font-size: 16px; font-weight: 700; }
+
+/* reading panel */
+.st-key-ts_progress_panel { background: var(--ts-ink); border-radius: var(--ts-r-lg); padding: 28px 30px; }
+.st-key-ts_progress_panel * { color: #F1F6F3; }
+.st-key-ts_progress_panel .stProgress > div > div { background: #0B2621; height: 12px; border-radius: 6px; }
+.st-key-ts_progress_panel .stProgress > div > div > div { background: #6FD3A8; border-radius: 6px; }
+.st-key-ts_progress_panel .stButton > button { background: #F1F6F3; color: var(--ts-text); border: none; }
+.st-key-ts_progress_panel .stButton > button * { color: var(--ts-text); }
+.ts-reading { display: flex; gap: 16px; align-items: center; }
+.ts-reading-dot { flex: none; width: 18px; height: 18px; border-radius: 50%; background: #6FD3A8;
+  animation: ts-pulse 1.4s ease-in-out infinite; }
+.ts-reading-title { font-size: 26px; font-weight: 800; }
+.ts-reading-meta { font-size: 18px; color: #BFD6CC; margin-top: 2px; }
+
+/* While reading, Streamlit greys out the previous page's elements. Keep the
+   reading panel (and its Stop button) fully visible and hide the rest. */
+[data-testid="stMain"]:has(.st-key-ts_progress_panel) [data-stale="true"]:not(:has(.st-key-ts_progress_panel)):not(.st-key-ts_progress_panel *) { display: none; }
+.st-key-ts_progress_panel [data-stale="true"], [data-stale="true"]:has(.st-key-ts_progress_panel) { opacity: 1 !important; }
+[data-testid="stSidebar"] [data-testid="stCaptionContainer"] p { color: #BFD6CC; }
+
+/* The only animation: a gently pulsing dot while files are being read.
+   (Cards are redrawn on every click, so animating them would flicker.) */
+@keyframes ts-pulse { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(.65); opacity: .55; } }
+@media (prefers-reduced-motion: reduce) { .ts-reading-dot { animation: none !important; } }
+
+/* password eye: "Show" / "Hide" on hover (its aria-label flips) */
+[data-testid="stTextInputRootElement"] button[aria-label$="password"] { position: relative; }
 [data-testid="stTextInputRootElement"] button[aria-label$="password"]:hover::after,
 [data-testid="stTextInputRootElement"] button[aria-label$="password"]:focus-visible::after {
-  position: absolute;
-  top: 50%;
-  right: calc(100% + 4px);
-  transform: translateY(-50%);
-  padding: 3px 8px;
-  border-radius: var(--ts-r-sm);
-  background: var(--ts-ink);
-  color: #FFFFFF;
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 1.3;
-  white-space: nowrap;
-  pointer-events: none;
-  z-index: 1000;
+  position: absolute; top: 50%; right: calc(100% + 4px); transform: translateY(-50%);
+  padding: 3px 8px; border-radius: 6px; background: var(--ts-ink); color: #FFFFFF;
+  font-size: 13px; font-weight: 700; line-height: 1.3; white-space: nowrap; pointer-events: none; z-index: 1000;
 }
 [data-testid="stTextInputRootElement"] button[aria-label="Show password"]:hover::after,
-[data-testid="stTextInputRootElement"] button[aria-label="Show password"]:focus-visible::after {
-  content: "Show";
-}
+[data-testid="stTextInputRootElement"] button[aria-label="Show password"]:focus-visible::after { content: "Show"; }
 [data-testid="stTextInputRootElement"] button[aria-label="Hide password"]:hover::after,
-[data-testid="stTextInputRootElement"] button[aria-label="Hide password"]:focus-visible::after {
-  content: "Hide";
-}
+[data-testid="stTextInputRootElement"] button[aria-label="Hide password"]:focus-visible::after { content: "Hide"; }
 </style>
 """
 
-# Ordered steps shown in the processing-status panel. Key is an internal
-# handle app.py uses to mark a step done/active; label is what's shown.
-PROGRESS_STEPS = [
-    ("extract", "Extracting transactions"),
-    ("coverage", "Checking 12-month coverage"),
-    ("reconcile", "Reconciling"),
-    ("questions", "Generating questions"),
-]
+ICONS = {"done": "✓", "attention": "!", "problem": "!"}
 
 
-def render_progress_steps(container, step_state, active_meta=""):
-    """Renders the 4-step progress list inside the dark ink panel.
+def _e(text) -> str:
+    return html.escape(str(text))
 
-    step_state: {step_key: "done" | "active" | "pending"}. Any key not
-    present defaults to "pending". active_meta: a short status line shown
-    under whichever step is currently "active" (e.g. "Processing 12 of 34 --
-    filename.pdf") -- purely cosmetic, callers keep driving their own state.
-    """
-    rows = []
-    for key, label in PROGRESS_STEPS:
-        state = step_state.get(key, "pending")
-        if state == "done":
-            dot = '<div class="ts-step-dot done">✓</div>'
-        elif state == "active":
-            dot = '<div class="ts-step-dot active"></div>'
-        else:
-            dot = '<div class="ts-step-dot"></div>'
-        meta = f'<div class="ts-step-meta">{active_meta}</div>' if (state == "active" and active_meta) else ""
-        rows.append(f'<div class="ts-step">{dot}<div><div class="ts-step-title">{label}</div>{meta}</div></div>')
-    container.markdown(
-        f'<div class="ts-steps">{"".join(rows)}</div>',
-        unsafe_allow_html=True,
-    )
+
+def next_step_html(tone: str, title: str, text: str = "") -> str:
+    """The "What to do next" card. tone: done | attention | problem."""
+    body = f'<div class="ts-next-text">{_e(text)}</div>' if text else ""
+    return (f'<div class="ts-next {tone}" role="status"><div class="ts-next-icon">{ICONS.get(tone, "•")}</div>'
+            f'<div><div class="ts-next-label">What to do next</div>'
+            f'<div class="ts-next-title">{_e(title)}</div>{body}</div></div>')
+
+
+def cards_html(cards) -> str:
+    """cards: [(label, value, note, highlight)]"""
+    parts = []
+    for label, value, note, highlight in cards:
+        note_html = f'<div class="ts-card-note">{_e(note)}</div>' if note else ""
+        parts.append(f'<div class="ts-card{" highlight" if highlight else ""}"><div class="ts-card-label">{_e(label)}</div>'
+                     f'<div class="ts-card-value">{_e(value)}</div>{note_html}</div>')
+    return f'<div class="ts-cards">{"".join(parts)}</div>'
+
+
+def reading_html(done: int, total: int) -> str:
+    return ('<div class="ts-reading"><div class="ts-reading-dot"></div><div>'
+            '<div class="ts-reading-title">Reading your files…</div>'
+            f'<div class="ts-reading-meta">{done} of {total} parts read and saved. '
+            'You can stop any time; nothing read so far is lost.</div>'
+            '</div></div>')

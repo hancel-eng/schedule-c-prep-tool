@@ -127,7 +127,7 @@ that data was caught by all three, naming the row.
 
 ## Client questions and the answer loop
 
-The dashboard's **Client Inquiry Questions** tab is editable, not
+The **3 · Questions** step is editable, not
 read-only — each question category gets its own `st.data_editor` table with
 an **Answer** column constrained to a `SelectboxColumn` (a fixed dropdown,
 never free text):
@@ -139,7 +139,7 @@ never free text):
 | Uncategorized Expense | any real Schedule C category | Recategorizes and upgrades confidence — never guesses at an answer that isn't a category the tool itself recognizes |
 | Form 1099 Verification | Filed / Will File / Not Required | Logged as a compliance note against the contractor; no dollar amount changes |
 
-Clicking **Apply Client Answers & Recalculate Workpaper** merges the edited
+Clicking **Save answers** merges the edited
 answers back into the full question objects (which still carry
 `transaction_keys`/`contractor`, stripped from the editor view to keep it
 readable), calls `apply_client_answers`, stores the result in
@@ -213,14 +213,38 @@ both save the whole client record, so the later save wins.
 
 ## Visual theme
 
-`theme.py` holds the design tokens (color, type, spacing, radius, elevation)
-and the CSS injected once at the top of `app.py`
-(`st.markdown(CSS, unsafe_allow_html=True)`). `.streamlit/config.toml`
-carries the same palette into Streamlit's own theme engine (native widgets,
-the sidebar, fonts via `theme.fontFaces`) so the CSS only needs to cover
-what the theme engine doesn't reach. **Pure presentation** — nothing in
-`theme.py` or the injected CSS touches parsing, categorization, or any other
-`core/` logic.
+Requested by the client: the app must be very easy to use, "as if for a
+child or an elderly person", in plain everyday words. What that became:
+
+- **One step on screen at a time.** `app.py` shows a "What to do next"
+  card (`theme.next_step_html`), then a step picker
+  (`st.segmented_control`, required, key `step__<client_id>`) with four
+  steps: Add files, Check numbers, Questions, Results & download. Each
+  label carries its status (✓, "2 to fix", "3 open"). The suggested step
+  is chosen in a fixed order: no files → reading paused → files that
+  failed → statements that don't add up → open questions → done.
+- **Reading takes over the page.** While files are being read, only the
+  reading panel and its **Stop for now** button show; Streamlit's greyed-
+  out leftovers from the previous page are hidden by CSS
+  (`[data-stale="true"]`) so Stop never looks disabled.
+- **Type and color.** Atkinson Hyperlegible Next (made for low-vision
+  readers) at 18px everywhere, big buttons (48px tall), a deep pine
+  sidebar, and color only for state: green done, amber needs you, red
+  problem. One light theme on purpose, painted explicitly.
+- **Numbers as HTML cards** (`theme.cards_html`) instead of `st.metric`,
+  which cut long amounts off ("$6,…").
+- **Plain words.** "Business income (Line 1)", "Business costs (Line 28)",
+  "Profit or loss (Line 31)"; question groups are asked as questions ("Is
+  this a business expense?"); the Answer column sits right after who and
+  how much, so it's on screen without scrolling sideways. IRS line numbers
+  stay, for the preparer.
+- **Motion:** only a pulsing dot while reading (off with reduced motion).
+  Cards are redrawn on every click, so animating them flickered.
+
+`theme.py` holds the CSS injected once at the top of `app.py`;
+`.streamlit/config.toml` carries the same palette and fonts into
+Streamlit's own theme engine. Pure presentation: nothing there touches
+`core/`.
 
 Two hard constraints worth knowing before touching this:
 
@@ -243,8 +267,8 @@ Two hard constraints worth knowing before touching this:
 
 - **`st.container(key="...")` generates a real CSS class**
   (`.st-key-<key>`) on the actual DOM node wrapping that container's
-  children — this is what makes the processing-status panel's dark
-  background genuinely wrap the step list and progress bar, unlike a raw
+  children — this is what makes the reading panel's dark background
+  genuinely wrap its text, progress bar, and Stop button, unlike a raw
   `st.markdown()` `<div>`, which renders as a sibling of the widgets below
   it, not a parent.
 
