@@ -3,12 +3,13 @@ import pandas as pd
 import io
 import os
 import subprocess
+import time
 from typing import List, Dict, Any
 
-from core.deduplication import FilenameDeduplicator
-from core.ai_reader import SUPPORTED_EXTENSIONS, read_files
+from core.ai_reader import SUPPORTED_EXTENSIONS
 from core.ai_errors import missing_api_key
-from core import document_rules, workpaper
+from core import processing, workpaper
+from core.storage import MemoryStore, PostgresStore, StorageError, new_client_state
 from core.tax_categorizer import TaxCategorizer, SCHEDULE_C_CATEGORIES
 from core.exception_analyzer import ExceptionAnalyzer
 from core.question_generator import ClientQuestionGenerator
@@ -21,7 +22,7 @@ import fix_statements_ui
 # Bumped on every meaningful change to this file, so whoever is looking at the
 # app can tell which version is running just by glancing at the sidebar --
 # there is no separate deploy/build pipeline that would otherwise show that.
-APP_VERSION = "v16"
+APP_VERSION = "v17"
 
 
 def _running_commit() -> str:
@@ -116,151 +117,159 @@ if not check_password():
 st.title("Schedule C Intake & Tax Prep Workpaper Tool")
 st.caption("Turns bank/credit card statements into a client question list and an audit-ready Schedule C workpaper.")
 
+# Short messages shown once on the next page draw. A toast shown right
+# before st.rerun() would vanish with the rerun.
+def _flash(message: str) -> None:
+    st.session_state.setdefault("flash", []).append(message)
+
+
+for _message in st.session_state.pop("flash", []):
+    st.toast(_message)
+
 # ----------------------------------------------------------------------------
-# MULTI-CLIENT SESSION STATE -- several clients open in the same browser
-# session at once, switchable without losing work or re-uploading, raised
-# directly by the client: "tengo como 20 clientes yendo a la vez... tener que
-# volver a entrar a este cliente en particular." Deliberately scoped to THIS
-# browser session only (no server-side storage, nothing written to disk) --
-# closing the tab still loses everything, same as before this feature, which
-# keeps the tool's existing "nothing is stored outside your browser tab"
-# guarantee intact. See README.md "Known limitations & roadmap".
+# SAVED WORK -- every client's work is saved in a private database
+# (core/storage.py) the moment it changes, so closing the tab, a restart, or
+# switching clients never loses anything. Without DATABASE_URL the app still
+# works, but only for this browser session, and the sidebar says so.
 # ----------------------------------------------------------------------------
-def _new_client_state(name: str = "") -> Dict[str, Any]:
-    return {
-        "client_name": name,
-        "tax_year": 2026,
-        "de_minimis_threshold": 2500.0,
-        "materiality_threshold": 0.0,
-        "upload_signature": None,
-        "all_transactions": [],
-        "correction_log": [],
-        "diagnostics_log": [],
-        "coverage_info": None,
-        "reconciliation_summary": None,
-        "reconciliation_results": [],
-        "duplicates_flagged": [],
-        "unique_file_count": 0,
-        "check_records": [],
-        "unmatched_check_records": [],
-        "supporting_documents": [],
-        # Source of truth (see core/workpaper.py); everything above is
-        # derived from these by rules on every run.
-        "files": {},
-        "manual_edits": [],
-        "answered_questions": [],
-    }
+DEFAULT_TAX_YEAR = 2026
 
 
-# Each client's own metadata widgets (name, tax year, thresholds) are bound
-# to these fixed keys -- switching the active client copies the field the
-# user was just looking at back into that client's stored dict, then seeds
-# these same keys with the newly-active client's values, before the widgets
-# below re-render with them.
-_CLIENT_WIDGET_KEYS = {
-    "client_name": "client_name_input",
-    "tax_year": "tax_year_input",
-    "de_minimis_threshold": "de_minimis_input",
-    "materiality_threshold": "materiality_input",
-}
+def _get_database_url() -> str:
+    try:
+        return st.secrets.get("DATABASE_URL", "") or os.environ.get("DATABASE_URL", "")
+    except FileNotFoundError:
+        return os.environ.get("DATABASE_URL", "")
 
 
-def _load_client_into_widgets(key: str) -> None:
-    client = st.session_state.clients[key]
-    for field, widget_key in _CLIENT_WIDGET_KEYS.items():
-        st.session_state[widget_key] = client[field]
+@st.cache_resource(show_spinner="Connecting to your saved work…")
+def _database_store(url: str) -> PostgresStore:
+    return PostgresStore(url)
 
 
-def _save_widgets_into_client(key: str) -> None:
-    if key not in st.session_state.clients:
-        return
-    client = st.session_state.clients[key]
-    for field, widget_key in _CLIENT_WIDGET_KEYS.items():
-        if widget_key in st.session_state:
-            client[field] = st.session_state[widget_key]
+def _get_store():
+    url = _get_database_url()
+    if url:
+        return _database_store(url)
+    if "memory_store" not in st.session_state:
+        st.session_state.memory_store = MemoryStore()
+    return st.session_state.memory_store
 
 
-def _client_label(key: str) -> str:
-    name = st.session_state.clients[key]["client_name"].strip()
-    return name if name else f"Untitled client ({key.replace('client_', '#')})"
+def _show_storage_error(err: StorageError) -> None:
+    st.error(f"**{err.message}**  \n**What to do:** {err.fix}  \n`Error code: {err.code}`")
+    if err.detail:
+        with st.expander("Technical detail"):
+            st.code(err.detail, language=None)
 
 
-if "clients" not in st.session_state:
-    st.session_state.clients = {"client_1": _new_client_state("Acme Consulting LLC")}
-    st.session_state.active_client_key = "client_1"
-    st.session_state._last_active_client_key = "client_1"
-    st.session_state.next_client_num = 2
-    st.session_state.client_switcher_label = _client_label("client_1")
-    _load_client_into_widgets("client_1")
+try:
+    store = _get_store()
+    clients = store.list_clients()
+    if not clients:
+        store.create_client("", DEFAULT_TAX_YEAR)
+        clients = store.list_clients()
+except StorageError as err:
+    _show_storage_error(err)
+    st.stop()
+
+if "client_cache" not in st.session_state:
+    st.session_state.client_cache = {}   # client_id -> loaded client state
+    st.session_state.reading = {}        # client_id -> True while reading runs
+
+client_ids = [c["client_id"] for c in clients]
+client_labels = {c["client_id"]: f"{(c['client_name'] or '').strip() or 'Untitled client'} · {c['tax_year']}"
+                 for c in clients}
+if st.session_state.get("active_client_id") not in client_ids:
+    st.session_state.active_client_id = client_ids[0]
 
 
-def _switch_to(new_key: str) -> None:
-    _save_widgets_into_client(st.session_state._last_active_client_key)
-    st.session_state.active_client_key = new_key
-    st.session_state._last_active_client_key = new_key
-    st.session_state.client_switcher_label = _client_label(new_key)
-    _load_client_into_widgets(new_key)
+def _create_client() -> None:
+    client_id = store.create_client(st.session_state.new_client_name.strip(), int(st.session_state.new_client_year))
+    st.session_state.active_client_id = client_id
+    st.session_state.new_client_name = ""
 
 
-def _on_switch_client() -> None:
-    # The selectbox's own key holds the *label* the user just picked (not a
-    # client key) -- plain st.selectbox options/labels, deliberately not
-    # format_func, since a label->key lookup here is simpler to reason about
-    # than keeping a raw key and a display label in sync through it.
-    label_to_key = {_client_label(k): k for k in st.session_state.clients}
-    new_key = label_to_key.get(st.session_state.client_switcher_label, st.session_state.active_client_key)
-    _switch_to(new_key)
+def _delete_client(client_id: str) -> None:
+    store.delete_client(client_id)
+    st.session_state.client_cache.pop(client_id, None)
+    st.session_state.reading.pop(client_id, None)
+    st.session_state.pop("active_client_id", None)
 
-
-def _on_new_client() -> None:
-    _save_widgets_into_client(st.session_state._last_active_client_key)
-    n = st.session_state.next_client_num
-    st.session_state.next_client_num += 1
-    new_key = f"client_{n}"
-    st.session_state.clients[new_key] = _new_client_state("")
-    _switch_to(new_key)
-
-
-# A rename typed into "Client Name / Business Name" below only reaches
-# client_state on the next switch (_save_widgets_into_client) -- too late
-# for the label list about to be built here, and the switcher's own current
-# value would fall out of its freshly-rebuilt options entirely the moment a
-# rename is typed, which Streamlit does not allow. So the active client's
-# name (only) is synced from its live widget value every run, before the
-# switcher renders.
-if "client_name_input" in st.session_state:
-    st.session_state.clients[st.session_state.active_client_key]["client_name"] = st.session_state["client_name_input"]
-st.session_state.client_switcher_label = _client_label(st.session_state.active_client_key)
 
 st.sidebar.header("Clients")
 st.sidebar.selectbox(
-    "Active client", options=[_client_label(k) for k in st.session_state.clients],
-    key="client_switcher_label", on_change=_on_switch_client,
-    help="Switch between clients without losing work or re-uploading -- each "
-         "keeps its own files, extraction, and answers for this browser "
-         "session. Nothing here is saved once you close this tab.",
+    "Active client", options=client_ids, format_func=lambda cid: client_labels.get(cid, cid),
+    key="active_client_id",
+    help="Switch any time. Every client's work is kept, so nothing needs to be uploaded again.",
 )
-st.sidebar.button("+ New Client", on_click=_on_new_client, use_container_width=True)
+with st.sidebar.popover("+ New Client", width="stretch"):
+    st.text_input("Client or business name", key="new_client_name", placeholder="e.g. Acme Consulting LLC")
+    st.number_input("Tax year", value=DEFAULT_TAX_YEAR, step=1, key="new_client_year")
+    st.button("Create client", type="primary", on_click=_create_client,
+              disabled=not st.session_state.get("new_client_name", "").strip())
 
-active_client_key = st.session_state.active_client_key
-client_state = st.session_state.clients[active_client_key]
+active_client_id = st.session_state.active_client_id
+_cache = st.session_state.client_cache
+if active_client_id not in _cache:
+    try:
+        _cache[active_client_id] = store.load_client(active_client_id) or new_client_state("", DEFAULT_TAX_YEAR)
+    except StorageError as err:
+        _show_storage_error(err)
+        st.stop()
+client_state = _cache[active_client_id]
+
+
+def save_client() -> None:
+    """Writes this client's work to the database. Called after every change."""
+    store.save_client(active_client_id, client_state)
+
+
+if store.is_saved:
+    st.sidebar.caption("✓ Work is saved automatically.")
+else:
+    st.sidebar.warning("Work is **not** being saved: closing this tab loses it. "
+                       "To save it, add DATABASE_URL to the app's secrets (see README).")
 
 st.sidebar.markdown("---")
 
-# Sidebar Configuration -- keyed to _CLIENT_WIDGET_KEYS above, so switching
-# clients (or adding a new one) reflects immediately in these fields.
+# Each client's own fields (name, tax year, thresholds) have their own widget
+# keys, filled from the saved client the first time they're shown and saved
+# back the moment they change.
+_META_FIELDS = ("client_name", "tax_year", "de_minimis_threshold", "materiality_threshold")
+
+
+def _meta_key(field: str) -> str:
+    return f"{field}__{active_client_id}"
+
+
+for _field in _META_FIELDS:
+    if _meta_key(_field) not in st.session_state:
+        st.session_state[_meta_key(_field)] = client_state[_field]
+
+
+def _on_meta_change(client_id: str, field: str) -> None:
+    state = st.session_state.client_cache[client_id]
+    state[field] = st.session_state[f"{field}__{client_id}"]
+    store.save_client(client_id, state)
+
+
 st.sidebar.header("Client & Tax Year Metadata")
 client_name = st.sidebar.text_input(
-    "Client Name / Business Name", key="client_name_input",
-    placeholder="e.g. Acme Consulting LLC",
+    "Client Name / Business Name", key=_meta_key("client_name"), placeholder="e.g. Acme Consulting LLC",
+    on_change=_on_meta_change, args=(active_client_id, "client_name"),
 )
-tax_year = st.sidebar.number_input("Tax Year", step=1, key="tax_year_input")
+tax_year = st.sidebar.number_input("Tax Year", step=1, key=_meta_key("tax_year"),
+                                   on_change=_on_meta_change, args=(active_client_id, "tax_year"))
 
 st.sidebar.markdown("---")
 st.sidebar.header("Minimum & Question Rules")
-de_minimis_threshold = st.sidebar.number_input("Fixed Asset Threshold ($)", step=100.0, key="de_minimis_input")
+de_minimis_threshold = st.sidebar.number_input(
+    "Fixed Asset Threshold ($)", step=100.0, key=_meta_key("de_minimis_threshold"),
+    on_change=_on_meta_change, args=(active_client_id, "de_minimis_threshold"))
 materiality_threshold = st.sidebar.number_input(
-    "Client Question Materiality Threshold ($)", step=1.0, key="materiality_input",
+    "Client Question Materiality Threshold ($)", step=1.0, key=_meta_key("materiality_threshold"),
+    on_change=_on_meta_change, args=(active_client_id, "materiality_threshold"),
     help="A vendor group whose total is at or below this amount gets no client "
          "question at all -- no one needs to be asked about a single $3 charge. "
          "Applies to the group's total, not each individual charge."
@@ -273,123 +282,161 @@ if _openai_key:
 else:
     st.sidebar.error(missing_api_key().message + " " + missing_api_key().fix)
 
+with st.sidebar.popover("Delete this client", width="stretch"):
+    st.warning(f"This permanently deletes **{client_labels.get(active_client_id)}** and all of its saved "
+               "work: files, hand fixes, and client answers. It cannot be undone.")
+    st.button("Yes, delete this client", type="primary", on_click=_delete_client, args=(active_client_id,),
+              key=f"delete_client_{active_client_id}")
+
 # Custom payee rules a prior session may have saved (core/tax_categorizer.py's
 # TaxCategorizer loads custom_rules.json automatically) still apply here even
 # with no in-app editor for them right now.
 categorizer = TaxCategorizer()
 
-# Main Processing Workflow
+# ----------------------------------------------------------------------------
+# 1. UPLOAD AND READ -- files are saved first, then read a few parts at a
+# time. Every part's answer is saved the moment it arrives (core/processing.py),
+# so Stop, a closed tab, or a crash never loses what was already read.
+# ----------------------------------------------------------------------------
 st.subheader("1. Upload Client Documents")
-st.caption("If a file with an identical name was already processed, it's flagged as a duplicate and skipped so nothing is counted twice.")
+st.caption(
+    "Add files any time, even after some are read. A file with the same name as one already uploaded "
+    "for this client is skipped, so nothing is counted twice. Reading is saved as it goes: you can "
+    "press **Stop**, close the page, and continue later."
+)
 
-# Scoped to the active client's own key, not shared across clients -- this is
-# what gives each client its own independent set of uploaded files that
-# reappears untouched when switching back to it, and stays empty for a
-# brand-new client rather than showing whatever the previously-active
-# client had uploaded.
+_round_key = f"uploader_round_{active_client_id}"
 uploaded_files = st.file_uploader(
     "Upload statements, checks, receipts, invoices, photos, spreadsheets, or Word files",
     accept_multiple_files=True,
     type=[ext.lstrip(".") for ext in SUPPORTED_EXTENSIONS],
-    key=f"uploader_{active_client_key}",
+    key=f"uploader_{active_client_id}_{st.session_state.get(_round_key, 0)}",
 )
-
-# A client already processed earlier this session must still show its
-# dashboard after switching away and back, even though its file_uploader
-# widget itself comes back empty -- Streamlit only keeps an uploaded file's
-# bytes alive for a widget that's actually re-instantiated on a given run,
-# and a different client's uploader is what renders while this one is
-# inactive. The already-extracted data lives in client_state regardless, so
-# the gate below is "does this client have files right now OR data from
-# before," never the uploader widget's live truthiness alone.
-has_existing_data = client_state.get("upload_signature") is not None
-
-if uploaded_files or has_existing_data:
-    # The app is single-session (see README: "one client = one session"), but
-    # a client's answers now need to survive a Streamlit rerun -- every
-    # widget interaction reruns this whole script top to bottom. Re-parsing
-    # every file on every rerun would silently discard any correction applied
-    # a moment earlier, so parsing only happens once per distinct set of
-    # uploaded files; re-running with the same files (or switching back to a
-    # client with no files currently in its uploader, see above) reuses the
-    # (possibly corrected) working transaction list already stored for this
-    # client.
-    if uploaded_files:
-        upload_signature = tuple(sorted((f.name, f.size) for f in uploaded_files))
-    else:
-        upload_signature = client_state["upload_signature"]
-    already_processed = client_state.get("upload_signature") == upload_signature
-
-    # Processing no longer starts the instant files are uploaded -- raised
-    # directly: "quiero agregar un botón para iniciar a procesar los
-    # archivos cargados, así el usuario tiene control de cuando iniciar a
-    # procesar." A new/changed file set just sits there, described, until
-    # this button is clicked.
-    if not already_processed:
-        st.info(f"**{len(uploaded_files)} file(s) ready.** Click **Start Processing** below when you're ready to extract and categorize them.")
-        start_clicked = st.button("Start Processing", type="primary", key=f"start_processing_{active_client_key}",
-                                  disabled=not _openai_key)
-        if not start_clicked:
-            st.stop()
-
-        # A visible, step-by-step account of what the app is doing, so a
-        # 34-file upload doesn't look like a frozen page. st.container(key=...)
-        # is what makes theme.py's ".st-key-ts_progress_panel" selector a
-        # real parent in the DOM (unlike a raw markdown <div>, which would
-        # render as a sibling of the widgets below it, not a wrapper around
-        # them).
-        with st.container(key="ts_progress_panel"):
-            steps_slot = st.empty()
-            file_progress_slot = st.empty()
-
-            def mark_steps(current_key, meta=""):
-                """Renders the 4-step list: everything before current_key is
-                'done', current_key is 'active' (with meta as its status line),
-                everything after is 'pending'. current_key=None marks all done."""
-                order = ["extract", "coverage", "reconcile", "questions"]
-                state, reached = {}, current_key is None
-                for k in order:
-                    if k == current_key:
-                        state[k] = "active"
-                    elif not reached:
-                        state[k] = "done"
-                    else:
-                        state[k] = "pending"
-                    if k == current_key:
-                        reached = True
-                render_progress_steps(steps_slot, state, active_meta=meta)
-
-            mark_steps("extract")
-            dedup = FilenameDeduplicator()
-            unique_files, duplicates_flagged = dedup.process_files(uploaded_files)
-
-            def on_read_progress(done, total, message):
-                mark_steps("extract", f"{done} of {total} part(s) read · {message}")
-                file_progress_slot.progress(done / total if total else 1.0)
-
-            read_results = read_files(
-                [(f.name, f.getvalue()) for f in unique_files],
-                tax_year=int(tax_year), on_progress=on_read_progress,
-            )
-            file_progress_slot.empty()
-
-            mark_steps("coverage", "Checking which months are covered")
-            client_state["upload_signature"] = upload_signature
-            client_state["files"] = workpaper.ingest(read_results)
-            client_state["manual_edits"] = []
-            client_state["answered_questions"] = []
-            client_state["duplicates_flagged"] = duplicates_flagged
-            client_state["unique_file_count"] = len(unique_files)
-            mark_steps(None)  # all 4 steps done
-
-        # Rerun into the branch below on a clean script run, rather than
-        # falling through inline -- the rest of the page always reads from
-        # client_state either way, so there is exactly one code path for
-        # "processed and ready to display," not two.
+if uploaded_files:
+    if st.button(f"Read {len(uploaded_files)} file(s)", type="primary", disabled=not _openai_key,
+                 key=f"start_reading_{active_client_id}"):
+        queued = processing.queue_files(store, active_client_id, client_state,
+                                        [(f.name, f.getvalue()) for f in uploaded_files])
+        save_client()
+        st.session_state[_round_key] = st.session_state.get(_round_key, 0) + 1
+        for dup in queued["duplicates"]:
+            _flash(f"Skipped {dup['filename']}: a file with that name was already uploaded.")
+        if queued["queued"]:
+            st.session_state.reading[active_client_id] = True
         st.rerun()
 
-    # already_processed is True here -- either it already was, or the
-    # processing block above just made it so and rerun into this same branch.
+reading_status = processing.progress(store, active_client_id)
+is_reading = st.session_state.reading.get(active_client_id, False)
+
+if reading_status["files_waiting"] and is_reading:
+    with st.container(key="ts_progress_panel"):
+        steps_slot = st.empty()
+        bar_slot = st.empty()
+        tick_slot = st.empty()
+        stop_clicked = st.button(
+            "Stop", key=f"stop_reading_{active_client_id}", icon=":material/stop_circle:",
+            help="Stops after the parts being read right now. Everything read so far stays saved.")
+    if stop_clicked:
+        st.session_state.reading[active_client_id] = False
+        _flash("Stopped. Everything read so far is saved.")
+        st.rerun()
+
+    total = reading_status["parts_total"] or 1
+    done_before = reading_status["parts_done"]
+    started_at = time.monotonic()
+
+    def _draw(done_now: int, message: str = "") -> None:
+        done = min(done_before + done_now, total)
+        render_progress_steps(steps_slot, {"extract": "active"},
+                              active_meta=f"{done} of {total} part(s) read and saved · "
+                                          f"{reading_status['files_waiting']} file(s) waiting")
+        bar_slot.progress(done / total)
+        seconds = int(time.monotonic() - started_at)
+        tick_slot.caption(f"Reading the next parts… {seconds}s" + (f" · {message}" if message else ""))
+
+    _draw(0)
+    started = processing.read_next_batch(store, active_client_id, int(tax_year), on_tick=_draw)
+    processing.finish_ready_files(store, active_client_id, client_state, save_client)
+    after = processing.progress(store, active_client_id)
+    if not after["files_waiting"]:
+        st.session_state.reading[active_client_id] = False
+        _flash("Done reading.")
+    elif not started:
+        time.sleep(2)  # parts sent before a Stop are still on their way back
+    st.rerun()
+
+if reading_status["files_waiting"] and not is_reading:
+    if reading_status["parts_done"] >= reading_status["parts_total"]:
+        processing.finish_ready_files(store, active_client_id, client_state, save_client)
+        st.rerun()
+    st.info(
+        f"**Reading is paused.** {reading_status['parts_done']} of {reading_status['parts_total']} part(s) "
+        f"of {reading_status['files_waiting']} file(s) are read and saved. Nothing is lost; continue any time."
+    )
+    paused_buttons = st.container(horizontal=True)
+    if paused_buttons.button("Continue reading", type="primary", disabled=not _openai_key,
+                             key=f"continue_reading_{active_client_id}"):
+        st.session_state.reading[active_client_id] = True
+        st.rerun()
+    with paused_buttons.popover("Remove the files not read yet"):
+        st.caption("These files will be removed: " + ", ".join(reading_status["waiting_files"]) +
+                   ". Files already read stay.")
+        if st.button("Yes, remove them", key=f"remove_waiting_{active_client_id}"):
+            processing.stop_waiting_files(store, active_client_id)
+            st.rerun()
+
+# Files the AI could not read: what went wrong, what to do, and buttons to
+# read it again (only the failed parts) or remove it.
+waiting_names = set(reading_status["waiting_files"])
+failed_files = {name: entry["error"] for name, entry in client_state["files"].items()
+                if entry.get("error") and name not in waiting_names}
+if failed_files:
+    st.error(f"**The AI could not read {len(failed_files)} file(s).** Nothing from them is counted. "
+             "Here is what went wrong:")
+    for name, err in failed_files.items():
+        where = f" (while reading {err['where']})" if err.get("where") else ""
+        st.markdown(f"- **{name}**{where} — {err['message']}  \n"
+                    f"  **What to do:** {err['fix']}  \n"
+                    f"  `Error code: {err['code']}`")
+        row = st.container(horizontal=True)
+        if name in reading_status["failed_files"]:
+            if row.button("Try again", key=f"retry_{active_client_id}_{name}", disabled=not _openai_key,
+                          help="Reads only the parts that failed. Parts already read are kept."):
+                processing.retry_file(store, active_client_id, name)
+                st.session_state.reading[active_client_id] = True
+                st.rerun()
+        if row.button("Remove this file", key=f"remove_failed_{active_client_id}_{name}"):
+            processing.remove_file(store, active_client_id, client_state, name)
+            save_client()
+            st.rerun()
+        if err.get("detail"):
+            with st.expander(f"Technical detail for {name}"):
+                st.code(err["detail"], language=None)
+
+if client_state["files"]:
+    with st.expander(f"Files for this client ({len(client_state['files'])})"):
+        file_rows = []
+        for name, entry in client_state["files"].items():
+            if entry.get("error"):
+                status_text = "⚠️ Could not read"
+            else:
+                status_text = f"✅ Read · {len(entry.get('documents') or [])} document(s)"
+            file_rows.append({"File": name, "Status": status_text, "Parts": entry.get("part_count", 0)})
+        for name in reading_status["waiting_files"]:
+            file_rows.append({"File": name, "Status": "⏳ Waiting to be read", "Parts": None})
+        st.dataframe(pd.DataFrame(file_rows), hide_index=True, width="stretch")
+        if client_state.get("duplicates_flagged"):
+            st.caption("Skipped because a file with the same name was already uploaded: " +
+                       ", ".join(sorted({d["filename"] for d in client_state["duplicates_flagged"]})))
+        remove_choice = st.selectbox("Remove a file and everything read from it",
+                                     options=[""] + list(client_state["files"]),
+                                     key=f"remove_choice_{active_client_id}")
+        if remove_choice and st.button(f"Remove {remove_choice}", key=f"remove_file_{active_client_id}"):
+            processing.remove_file(store, active_client_id, client_state, remove_choice)
+            save_client()
+            st.rerun()
+
+if client_state["files"]:
     # Rebuilt from the source of truth on every run (rules only, fast), so a
     # hand correction, a client answer, or a changed tax year is reflected
     # everywhere at once.
@@ -406,15 +453,6 @@ if uploaded_files or has_existing_data:
     unmatched_check_records = client_state["unmatched_check_records"]
     supporting_documents = client_state["supporting_documents"]
     recon_status = reconciliation_summary['status']
-
-    if uploaded_files:
-        st.caption(f"Processed {client_state['unique_file_count']} file(s) for this client.")
-    else:
-        st.caption(
-            f"Showing previously processed data for this client ({client_state['unique_file_count']} file(s)) -- "
-            "the uploader above is empty because you switched away and back, but nothing was lost. "
-            "Upload new/additional files to reprocess."
-        )
 
     # Recomputed fresh every run, straight from the current (possibly
     # client-corrected) transaction list, so an applied answer's effect
@@ -443,28 +481,6 @@ if uploaded_files or has_existing_data:
     ]
 
     st.caption(f"{len(questions)} question(s) for the client")
-
-    ai_failures = [e for e in diagnostics_log if e.get("ai_error")]
-    if ai_failures:
-        st.error(
-            f"**The AI could not read {len(ai_failures)} file(s).** "
-            "The numbers from these files are not reliable. Here is what went wrong:"
-        )
-        for entry in ai_failures:
-            err = entry["ai_error"]
-            where = f" (while reading {err['where']})" if err.get("where") else ""
-            st.markdown(
-                f"- **{entry['file']}**{where} — {err['message']}  \n"
-                f"  **What to do:** {err['fix']}  \n"
-                f"  `Error code: {err['code']}`"
-            )
-            if err.get("detail"):
-                with st.expander(f"Technical detail for {entry['file']}"):
-                    st.code(err["detail"], language=None)
-
-    if duplicates_flagged:
-        for dup in duplicates_flagged:
-            st.warning(f"**Duplicate File Skipped**: `{dup['filename']}` — {dup['reason']}")
 
     if not coverage_info['is_complete']:
         st.warning(f"**12-Month Coverage Warning:** {coverage_info['status_message']}")
@@ -625,7 +641,7 @@ if uploaded_files or has_existing_data:
     tab_supporting = tabs[4] if has_supporting_docs else None
 
     with tab_fix:
-        fix_statements_ui.render(client_state, active_client_key)
+        fix_statements_ui.render(client_state, active_client_id, save_client)
 
     with tab_questions:
         st.caption(
@@ -658,6 +674,7 @@ if uploaded_files or has_existing_data:
             # dashboard worth seeing. When nothing changed, this message is
             # what's left on screen instead of flashing and disappearing.
             if applied_count:
+                save_client()
                 st.rerun()
             else:
                 st.info(empty_message)
@@ -999,8 +1016,8 @@ if uploaded_files or has_existing_data:
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
-else:
-    st.warning("Please upload bank statement PDFs or spreadsheets to begin processing.")
+elif not reading_status["files_waiting"] and not uploaded_files:
+    st.info("Upload this client's statements and other documents above, then click **Read**.")
 
 st.sidebar.markdown("---")
 st.sidebar.caption(f"App version: {APP_VERSION} (commit {_running_commit()})")

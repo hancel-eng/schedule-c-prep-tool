@@ -8,6 +8,38 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for how the current system works,
 and [README.md](README.md#known-limitations--roadmap) for what's still
 open.
 
+## 2026-11-09 — Saved work, reading in steps, and a Stop button (AI-first rebuild, step 5)
+
+Requested by the client: progress must be saved and never lost, files must
+be processed in steps, and there must be a button to stop.
+
+- New `core/storage.py`: every client's work is saved in a private
+  Supabase/Postgres database (`DATABASE_URL` in secrets), in its own schema
+  with row level security on. Clients are listed in the sidebar from the
+  database; closing the tab or restarting the app loses nothing. Without a
+  database the app still works and says that work isn't being saved.
+- New `core/processing.py`: uploaded files are saved, then read 4 parts at
+  a time; each part's answer is saved the moment it arrives. **Stop**
+  pauses within about a second; **Continue reading** picks up where it
+  left off, also after closing the page. A file's bytes are deleted once
+  it's read.
+- A file the AI couldn't read now has **Try again** (re-reads only the
+  failed parts) and **Remove this file**. Files can be added to a client at
+  any time; a new upload no longer throws away earlier files, hand fixes,
+  or answers.
+- New **Files for this client** list, **Delete this client** (asks first),
+  and **+ New Client** with a name and tax year.
+- `core/deduplication.py` removed; the same filename rule now lives in
+  `processing.queue_files` and also covers files uploaded earlier.
+- Verified against the real Supabase database (in a throwaway schema,
+  deleted afterwards): save, stop and continue, retry of a failed part
+  only, delete. Verified in the browser with a fake AI: Stop paused in 1.5
+  seconds, the 4 parts in the air when Stop was pressed were saved anyway
+  (reload showed 4 of 7), Continue read only the 3 missing parts, Try again
+  re-read only the failed part, and a client survived an app restart.
+- Not verified yet: a real OpenAI run through the new steps, and Streamlit
+  Cloud with `DATABASE_URL` set.
+
 ## 2026-11-09 — Fix statements by hand inside the app (AI-first rebuild, step 4)
 
 Requested by the client: anything that doesn't add up must be fixable in

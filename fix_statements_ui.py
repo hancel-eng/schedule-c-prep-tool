@@ -2,7 +2,7 @@
 without uploading anything again. All the logic lives in core/workpaper.py
 and core/document_rules.py; this file only draws it."""
 from datetime import date
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import pandas as pd
 import streamlit as st
@@ -102,7 +102,8 @@ def _show_result(result: Dict[str, Any], prefix: str = "") -> None:
         st.warning(text, icon="❔")
 
 
-def render(client_state: Dict[str, Any], client_key: str) -> None:
+def render(client_state: Dict[str, Any], client_key: str, save: Callable[[], None]) -> None:
+    """`save` writes the client's work to the database; called after every change."""
     files = client_state["files"]
     edits = client_state["manual_edits"]
     statements = workpaper.statement_documents(files)
@@ -127,7 +128,7 @@ def render(client_state: Dict[str, Any], client_key: str) -> None:
         first_problem_open = first_problem_open or expand
         title = f"{STATUS_ICONS[status]} {STATUS_WORDS[status]} · {document_rules.document_label(doc)} · {filename}"
         with st.expander(title, expanded=expand):
-            _render_one(files, edits, filename, doc_index, doc, result, client_key)
+            _render_one(files, edits, filename, doc_index, doc, result, client_key, save)
 
     if edits:
         st.markdown("**Every fix made by hand** (also in the Excel file, sheet *Manual Corrections*):")
@@ -135,7 +136,7 @@ def render(client_state: Dict[str, Any], client_key: str) -> None:
                      width="stretch", hide_index=True)
 
 
-def _render_one(files, edits, filename, doc_index, doc, result, client_key) -> None:
+def _render_one(files, edits, filename, doc_index, doc, result, client_key, save) -> None:
     _show_result(result)
     version = doc.get("edit_version", 0)
     key = f"fix_{client_key}_{filename}_{doc_index}_{version}"
@@ -196,12 +197,14 @@ def _render_one(files, edits, filename, doc_index, doc, result, client_key) -> N
             opening_balance=opening, closing_balance=closing)
         doc = files[filename]["documents"][doc_index]
         doc["edit_version"] = version + 1
-        st.toast(f"Saved {count} fix(es).")
+        save()
+        st.session_state.setdefault("flash", []).append(f"Saved {count} fix(es).")
         st.rerun()
     if doc.get("corrected_by_hand") and buttons.button("Go back to what the AI read", key=f"{key}_undo"):
         workpaper.undo_corrections(files, edits, filename, doc_index)
         files[filename]["documents"][doc_index]["edit_version"] = version + 1
-        st.toast("Back to what the AI read.")
+        save()
+        st.session_state.setdefault("flash", []).append("Back to what the AI read.")
         st.rerun()
 
     if result["status"] in ("Discrepancy", "Not Reconcilable") and not changed:
@@ -211,6 +214,7 @@ def _render_one(files, edits, filename, doc_index, doc, result, client_key) -> N
             if st.button("Mark as checked", key=f"{key}_mark", disabled=not note.strip()):
                 workpaper.mark_checked_by_hand(files, edits, filename, doc_index, note)
                 files[filename]["documents"][doc_index]["edit_version"] = version + 1
+                save()
                 st.rerun()
 
 

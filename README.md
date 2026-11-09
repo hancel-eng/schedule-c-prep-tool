@@ -108,56 +108,61 @@ shows a warning on the login screen and nobody can get in.
 
 ## How to use it
 
-1. **Sidebar → Clients** — pick which client you're working on (or click
-   **+ New Client**). Several clients can be open in the same session at
-   once; switching between them keeps each one's own files, answers, and
-   progress — see [Working with multiple clients](#working-with-multiple-clients) below.
+1. **Sidebar → Clients** — pick which client you're working on, or click
+   **+ New Client**. Every client's work is saved automatically — see
+   [Saved work](#saved-work) below.
 2. **Fill in that client's metadata** — name, the tax year, the fixed-asset
    ("de minimis") dollar threshold, and the client-question materiality
    threshold (a vendor whose total spend doesn't clear this amount gets no
    question at all — leave it at $0 to ask about everything).
-3. **Upload** — the client's bank/credit-card statement PDFs and/or
-   spreadsheets for the full tax year. Don't upload a P&L summary
-   *alongside* the statements it summarizes — that counts the same money
-   twice. Use one or the other.
-4. **Click "Start Processing"** when you're ready — uploading files no
-   longer starts extraction automatically; nothing happens until you click
-   this, so you're never waiting on a run you didn't mean to start yet.
-5. **Review "Client Inquiry Questions"** (the first tab) — each open
-   question has an **Answer** dropdown with a fixed set of choices, never a
-   free-text box, so the tool is never guessing what you meant.
-6. **Send the questions to the client**, however you normally do that.
-7. **Enter the client's answers** in the same Answer column and click
+3. **Upload** — the client's statements and other documents for the tax
+   year, then click **Read**. You can add more files later; a file with
+   the same name as one already uploaded is skipped. Don't upload a P&L
+   summary *alongside* the statements it summarizes — that counts the same
+   money twice. Use one or the other.
+4. **Wait, or press Stop.** Files are read a few parts at a time and every
+   part is saved as soon as it's read. **Stop** pauses; **Continue
+   reading** picks up where it left off, even after closing the page.
+5. **Fix Statements** (the first tab) — fix anything that doesn't add up.
+6. **Review "Client Inquiry Questions"** — each open question has an
+   **Answer** dropdown with a fixed set of choices, never a free-text box,
+   so the tool is never guessing what you meant.
+7. **Send the questions to the client**, however you normally do that.
+8. **Enter the client's answers** in the same Answer column and click
    **Apply Client Answers & Recalculate Workpaper** — everything updates
    immediately, and an answered question won't come back. If several rows
    share the same answer (e.g. "these are all personal transfers"), check
    their boxes and use the bulk-answer control under the table instead of
    picking the same answer row by row.
-8. **Download the Excel workpaper.**
+9. **Download the Excel workpaper.**
 
-Nothing is saved once you close the browser tab — everything lives only in
-your session while you're working, never written to a database or disk.
+## Saved work
 
-## Working with multiple clients
+Every client's work is saved in a private database (a Supabase Postgres
+project) the moment it changes: the client's name and settings, what the AI
+read, every hand fix, and every client answer. Close the tab, come back
+tomorrow, pick the client in the sidebar, and everything is there — no
+uploading again.
 
-**Sidebar → Clients** lets you keep several clients open in the same
-session and switch between them without losing work or re-uploading
-anything — click **+ New Client** to start one, or pick an existing one
-from the dropdown. Each client keeps its own uploaded files, extracted
-transactions, applied answers, and metadata independently; switching away
-and back shows exactly what you left, even mid-question.
+Uploaded files are saved only until they're read. Once a file is read
+successfully its bytes are deleted; only what the AI read from it is kept.
+A file the AI couldn't read keeps its bytes so **Try again** can re-read
+just the parts that failed.
 
-One visual quirk worth knowing: switching clients can leave the file
-**uploader** itself looking empty when you switch back to a client you'd
-already processed — that's expected, not a data loss. The already-extracted
-results are what's actually shown (look for the "Showing previously
-processed data for this client" note), and uploading is only needed again
-if you want to add or replace files for that client.
+**Delete this client** (sidebar) permanently removes a client and all of
+its saved work. It asks first and can't be undone.
 
-This is session-only, not saved storage: closing the browser tab still
-loses every client's work, the same as before this feature existed —
-nothing here is written to a database or disk. If you need to keep a
-client's results past closing the tab, download its Excel workpaper first.
+Set it up once with `DATABASE_URL` in the app's secrets (see
+`.streamlit/secrets.toml.example`). The app creates its own tables, in a
+schema of their own (`schedule_c`) that Supabase doesn't expose through its
+public web API, with row level security on. Without `DATABASE_URL` the app
+still works but keeps work only until the tab closes, and the sidebar
+warns about it.
+
+Two limits worth knowing: reading runs only while the client's page is open
+(switch to another client and that client's reading pauses until you come
+back and press **Continue reading**), and two people editing the same client
+at the same moment would overwrite each other's last change.
 
 ---
 
@@ -182,10 +187,9 @@ client's results past closing the tab, download its Excel workpaper first.
 - **The AI reads; plain rules decide.** The AI (OpenAI) only transcribes
   what is printed. Every total, category, check, and question comes from
   rules you can trace. See [How files are read](#how-files-are-read).
-- **Several clients, one browser session, nothing stored outside it.**
-  Switching clients never mixes their data together, and nothing here is
-  ever written to a database or disk — closing the tab loses everything,
-  same as always. See [Working with multiple clients](#working-with-multiple-clients).
+- **Work is saved as it goes.** Every change is saved to a private
+  database, and reading is saved part by part, so a stop, a closed tab, or a
+  crash loses nothing. See [Saved work](#saved-work).
 - **Duplicate files are caught by filename, not by comparing individual
   transactions** — comparing transactions risked accidentally throwing away
   a real transaction that happened to look like a duplicate.
@@ -204,6 +208,8 @@ core/                         All the actual business logic, independent
   ai_errors.py                  Turns every AI or file failure into a clear error code
   document_rules.py             Rules after reading: signs, checks, reconciliation, coverage
   workpaper.py                  Rebuilds a client's workpaper from AI reads + hand fixes + answers
+  processing.py                 Reads files in small saved steps (Stop / Continue / Try again)
+  storage.py                    Saves every client's work (Supabase/Postgres, or memory)
   check_matcher.py              Matches a check copy's payee to its statement line item
   totals_parser.py              Reads client-provided year-end totals
   tax_categorizer.py            Decides which Schedule C line a transaction belongs on
@@ -213,7 +219,6 @@ core/                         All the actual business logic, independent
   transaction_utils.py          Internal bookkeeping (traces a question back to its transaction)
   answer_applier.py             Applies a client's answer to the workpaper
   excel_exporter.py             Builds the final Excel file
-  deduplication.py              Catches duplicate file uploads
 
 tests/                        Automated tests (one file per module above)
 sample_data/                  Made-up sample files, safe to upload/share
@@ -250,12 +255,13 @@ If the AI can't read a file, the app shows a red box with what went wrong,
 what to do, and an error code (for example `OUT_OF_CREDIT`,
 `BAD_API_KEY`, `FILE_LOCKED`), and nothing from that file is counted.
 
-The AI key is required:
+The AI key is required, and the database is recommended:
 
 ```toml
 # .streamlit/secrets.toml (locally) or the app's Settings -> Secrets (on
 # Streamlit Community Cloud)
 OPENAI_API_KEY = "sk-..."
+DATABASE_URL = "postgresql://..."   # see Saved work above
 ```
 
 Measured once, on a real 6-page bank statement: about 20,000 tokens in and
@@ -290,9 +296,8 @@ never silently attached to the wrong transaction.
 - **Transfers between a client's own accounts, across two different
   uploaded files,** are only caught when the transaction's own description
   makes it obvious. There's no cross-file matching by date and amount yet.
-- **Not yet built:** saving progress between sessions, a Stop button, and
-  the plain-language redesign. These are the next steps of the AI-first
-  rebuild.
+- **Not yet built:** the plain-language redesign, the last step of the
+  AI-first rebuild.
 
 See **[CHANGELOG.md](CHANGELOG.md)** for everything that's already been
 found and fixed.

@@ -11,7 +11,7 @@ it's built and why, for anyone about to change it.
 - [Non-P&L exclusions](#non-pl-exclusions)
 - [Reconciliation](#reconciliation)
 - [Client questions and the answer loop](#client-questions-and-the-answer-loop)
-- [The Streamlit session pattern](#the-streamlit-session-pattern)
+- [Saved work and reading in steps](#saved-work-and-reading-in-steps)
 - [Visual theme](#visual-theme)
 - [Hand corrections and the source of truth](#hand-corrections-and-the-source-of-truth)
 - [Retired: rule-based readers and learned bank profiles](#retired-rule-based-readers-and-learned-bank-profiles)
@@ -27,9 +27,11 @@ AI only transcribes what is printed. Everything after that (signs, card
 payments vs. refunds, categories, reconciliation, questions) is plain
 Python.
 
-1. `core/deduplication.py` skips a file whose name was already uploaded.
-   Filename only, never transaction-level (that silently dropped real
-   transactions when it was tried).
+1. `core/processing.py` `queue_files` skips a file whose name was already
+   uploaded for this client (filename only, never transaction-level: that
+   silently dropped real transactions when it was tried), saves the rest,
+   and reads them in small saved steps (see
+   [Saved work and reading in steps](#saved-work-and-reading-in-steps)).
 2. `core/ai_reader.py` reads every file with OpenAI (`gpt-6-astra`):
    - `plan_parts` splits the file so no single AI answer is long enough to
      be cut off: PDFs into 4-page parts (sent as real PDF pages with
@@ -143,98 +145,71 @@ answers back into the full question objects (which still carry
 readable), calls `apply_client_answers`, stores the result in
 `st.session_state`, and reruns.
 
-## The Streamlit session pattern
+## Saved work and reading in steps
 
-Streamlit reruns the entire script top-to-bottom on every widget
-interaction. Re-parsing every uploaded file on every interaction (e.g. every
-time the preparer edits an Answer cell) would be slow and would silently
-discard any correction applied a moment earlier, so `app.py` guards parsing
-behind a signature of the uploaded files (name + size):
+Streamlit reruns the whole script on every click. Since 2026-11-09 nothing
+important lives only in `st.session_state`: every client's source of truth
+is saved by `core/storage.py` and everything else is rebuilt from it on
+every run (`workpaper.rebuild`, rules only, fast).
 
-```python
-upload_signature = tuple(sorted((f.name, f.size) for f in uploaded_files))
-already_processed = client_state.get("upload_signature") == upload_signature
-```
+### Storage (`core/storage.py`)
 
-A genuinely new set of files needs a **Start Processing** click (below)
-before it re-parses from scratch and resets `client_state["correction_log"]`
-(a new file set starts with a clean slate). Otherwise,
-`client_state["all_transactions"]` — the working, possibly client-corrected
-transaction list — is reused. **Exceptions and questions are recomputed
-fresh on every single run** once processed, regardless of whether this run
-re-parsed, straight from the current transaction list: this is what makes
-an applied answer's effect show up immediately and keeps an answered
-question from reappearing.
+Two stores with the same methods. `PostgresStore` (a Supabase project,
+`DATABASE_URL` in secrets) is the real one; `MemoryStore` is used when no
+database is set up (the sidebar warns that work isn't saved) and by the
+tests. `MemoryStore` serialises through JSON exactly like the database, so
+a value Postgres would refuse fails in the tests too.
 
-### Explicit "Start Processing," not parse-on-upload
+Tables, in their own schema `schedule_c` (Supabase only exposes `public`
+through its web API; row level security is also on, with no policies, so
+only the app's own database login can read them):
 
-Uploading files no longer triggers extraction immediately — raised
-directly: "quiero agregar un botón para iniciar a procesar los archivos
-cargados, así el usuario tiene control de cuando iniciar a procesar." A
-new/changed file set is described ("N file(s) ready") and waits for a
-**Start Processing** button click; `st.stop()` halts the rest of the script
-for that run if it hasn't been clicked yet, so nothing below (dashboard,
-tabs, export) tries to render against data that doesn't exist yet. The
-processing block ends with `st.rerun()` rather than falling through inline
-to the dashboard code — deliberately, so there is exactly one code path
-that reads and displays `client_state` ("already processed"), not two
-slightly-different ones (`just finished processing` vs. `was already done`).
+| Table | One row per | Holds |
+|---|---|---|
+| `clients` | client | `state` JSON: name, tax year, thresholds, `files` (AI documents + untouched copy), `manual_edits`, `answered_questions`, `duplicates_flagged` |
+| `pending_files` | file not yet read (or failed) | the file's bytes, part count, `failed` flag |
+| `part_results` | part already read | the AI's answer for that part, or its error |
 
-### Multiple clients in one session
+`client_record()` keeps only the saved fields and runs them through
+`to_json_safe()` (pandas/numpy numbers → Python numbers, dates → text,
+NaN → null; Postgres refuses NaN in JSON). The connection pool is created
+once per app process (`st.cache_resource`); a connection problem becomes a
+`StorageError` with code `DATABASE_UNREACHABLE`, a plain message, a fix,
+and a technical detail with the connection string and password removed.
 
-Several clients can be open in the same browser session at once, switchable
-without losing work or re-uploading — raised directly by the client
-("tengo como 20 clientes yendo a la vez... tener que volver a entrar a este
-cliente en particular"). `st.session_state.clients` is a dict keyed by an
-internal id (`"client_1"`, `"client_2"`, ...), each value holding that
-client's own metadata (name, tax year, thresholds) and processing results
-(`all_transactions`, `correction_log`, reconciliation state, etc.) — the
-same fields that used to live flat on `st.session_state` before this
-feature, now namespaced per client instead. `client_state =
-st.session_state.clients[active_client_key]` at the top of `app.py` is what
-every section below reads from and writes to.
+The app saves after every change: metadata widgets (`on_change`), a
+finished file, hand fixes (`fix_statements_ui.render(..., save)`), and
+applied answers. Each client's widgets have their own keys
+(`client_name__<client_id>`), filled from the saved client the first time
+they're shown, so switching clients needs no copying back and forth.
 
-Two things make switching actually work, both non-obvious:
+### Reading in steps (`core/processing.py`)
 
-- **The sidebar metadata widgets (name, tax year, thresholds) are bound to
-  fixed keys** (`client_name_input`, `tax_year_input`, ...), not to the
-  active client directly. Switching clients means: copy whatever's
-  currently in those keys into the client being switched *away from*
-  (`_save_widgets_into_client`), then seed those same keys with the values
-  of the client being switched *to* (`_load_client_into_widgets`) — done in
-  that order, before the widgets re-render, or the previous client's edits
-  would be silently lost. `_switch_to()` is the one place both happen
-  together; every entry point (the switcher's `on_change`, "+ New Client")
-  goes through it. The switcher selectbox intentionally does **not** use
-  `format_func` to show a display label for a raw client-id option (a real
-  bug surfaced doing it that way — a stale index lookup inside
-  `streamlit.testing.v1`'s own `Selectbox.index` property, not reproducible
-  outside tests but not worth the risk in production either) — it uses the
-  *labels themselves* as the options, with a label→key lookup on change
-  instead.
-- **`st.file_uploader` is keyed per client** (`f"uploader_{active_client_key}"`),
-  which is what gives each client its own independent set of uploaded
-  files. But Streamlit only keeps an uploaded file's bytes alive for a
-  widget that's actually re-instantiated on a given run — switch to a
-  different client for even one rerun, and the previous client's uploader
-  widget isn't part of that run's script execution, and its file bytes can
-  be dropped. Confirmed switching away and back: the uploader comes back
-  empty. This is harmless *only* because the dashboard's "is there
-  something to show" gate is `uploaded_files or has_existing_data`, never
-  `uploaded_files` alone — `has_existing_data` is
-  `client_state.get("upload_signature") is not None`, independent of
-  whatever the live uploader widget currently holds. The already-extracted
-  transactions, reconciliation results, and questions all live in
-  `client_state`, not in the uploader, so losing the raw uploaded bytes
-  after processing costs nothing.
+1. **Read** saves the uploaded files to `pending_files` (with their part
+   count from `ai_reader.plan_parts`) and sets
+   `st.session_state.reading[client_id]`.
+2. Each script run while reading calls `read_next_batch`: up to 4 parts at
+   once, oldest file first. Each worker thread saves its part's answer to
+   `part_results` the moment it arrives, so the answer is kept even if the
+   page stops waiting for it.
+3. While waiting, the main thread redraws progress about once a second.
+   That redraw is where Streamlit can end the run when **Stop** is clicked,
+   so Stop takes effect within about a second. Parts already sent keep
+   going in the background and save themselves; `_in_flight` (per app
+   process) stops a quick **Continue** from sending them again.
+4. `finish_ready_files` joins the parts of every fully-read file
+   (`ai_reader.merge_parts`), saves them into the client's `files`, and only
+   then deletes the file's bytes. A file with a failed part keeps its bytes
+   and its good parts, records the error, and is marked `failed`; **Try
+   again** re-reads only the failed parts.
+5. The run ends with `st.rerun()` until nothing is waiting.
 
-This is still consistent with "nothing is stored outside your browser tab"
-(see [README.md](README.md#key-design-decisions)): `st.session_state.clients`
-lives only as long as the browser tab does, in memory, never written to
-disk or a database. Closing the tab loses every client's work, same as
-before this feature — the guarantee this trades away is narrower: not
-"nothing persists across a page refresh," but "nothing persists across
-closing the tab."
+Reading only runs while that client's page is open in a browser: there is
+no background worker. A tab closed mid-read shows **Reading is paused** with
+the count of parts already saved, and **Continue reading** picks up there.
+
+Known limit: two browser tabs editing the same client at the same moment
+both save the whole client record, so the later save wins.
 
 ## Visual theme
 
