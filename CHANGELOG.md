@@ -8,6 +8,36 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for how the current system works,
 and [README.md](README.md#known-limitations--roadmap) for what's still
 open.
 
+## 2026-11-09 — Fix statements by hand inside the app (AI-first rebuild, step 4)
+
+Requested by the client: anything that doesn't add up must be fixable in
+the app, without uploading another file.
+
+- New `core/workpaper.py`: the client's source of truth is now the AI's
+  documents (plus an untouched copy), hand corrections, and client
+  answers. Everything else is rebuilt by rules on every page load, so a
+  correction and an answer can never overwrite each other.
+- New "Fix Statements" tab (first tab, with a count of what needs fixing):
+  edit printed balances and summary totals, edit/add/delete rows, a per-row
+  "should be" balance next to the printed one that marks where it breaks,
+  a live "if you save" check, save, undo back to the AI's version, and
+  "checked by hand" with a required note.
+- Every hand fix is logged with before/after, shown in the app, and
+  exported as a new Excel sheet "Manual Corrections".
+- Found while testing in the browser: dollar amounts in alerts were being
+  read as math formulas by Streamlit's markdown (`$1,000.00 ... $2,120.00`
+  rendered without the dollar signs); now escaped.
+- Found while testing: CSV reading guessed the letter "i" as the column
+  separator in a one-column file ("Description" became "Descr | pt | on"),
+  and would have failed on bank exports whose first lines have fewer
+  columns than the table. CSV is now read with the standard `csv` module,
+  separators limited to comma, semicolon, tab, and pipe, with Windows text
+  encoding supported.
+- Verified in the browser with a fake AI: fixing a misread ending balance,
+  editing a row amount in the grid (the live check correctly refused 200
+  because the printed row balance disagreed), saving, undoing, and marking
+  checked by hand.
+
 ## 2026-11-09 — The AI reads every file; rules do everything else (AI-first rebuild, steps 2-3)
 
 Decided by the client: the AI is the only reader, for any file type, and

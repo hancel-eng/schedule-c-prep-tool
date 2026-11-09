@@ -194,6 +194,7 @@ client's results past closing the tab, download its Excel workpaper first.
 
 ```
 app.py                        The app itself (Streamlit)
+fix_statements_ui.py          The "Fix Statements" tab (hand corrections)
 theme.py                      Visual design (colors, fonts, layout)
 .streamlit/config.toml        Streamlit's own theme settings
 
@@ -202,6 +203,7 @@ core/                         All the actual business logic, independent
   ai_reader.py                  The AI reader: splits files, reads them, stitches them back
   ai_errors.py                  Turns every AI or file failure into a clear error code
   document_rules.py             Rules after reading: signs, checks, reconciliation, coverage
+  workpaper.py                  Rebuilds a client's workpaper from AI reads + hand fixes + answers
   check_matcher.py              Matches a check copy's payee to its statement line item
   totals_parser.py              Reads client-provided year-end totals
   tax_categorizer.py            Decides which Schedule C line a transaction belongs on
@@ -236,6 +238,13 @@ is split again and retried automatically; a cut-off answer is never used.
 After reading, plain rules check each statement against its own printed
 numbers (starting balance, ending balance, summary totals, and the balance
 on each row) and explain in plain words anything that doesn't add up.
+
+If a statement doesn't add up, open the **Fix Statements** tab: change
+the printed balances or totals, edit, add, or delete rows, and see right
+away whether it adds up before saving. Every fix is logged (also in the
+Excel sheet *Manual Corrections*) and can be undone back to what the AI
+read. A statement with nothing to check against can be marked "checked by
+hand" with a required note.
 
 If the AI can't read a file, the app shows a red box with what went wrong,
 what to do, and an error code (for example `OUT_OF_CREDIT`,
@@ -281,9 +290,9 @@ never silently attached to the wrong transaction.
 - **Transfers between a client's own accounts, across two different
   uploaded files,** are only caught when the transaction's own description
   makes it obvious. There's no cross-file matching by date and amount yet.
-- **Not yet built:** saving progress between sessions, a Stop button,
-  fixing a mismatched statement inside the app, and the plain-language
-  redesign. These are the next steps of the AI-first rebuild.
+- **Not yet built:** saving progress between sessions, a Stop button, and
+  the plain-language redesign. These are the next steps of the AI-first
+  rebuild.
 
 See **[CHANGELOG.md](CHANGELOG.md)** for everything that's already been
 found and fixed.

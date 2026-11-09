@@ -13,6 +13,7 @@ it's built and why, for anyone about to change it.
 - [Client questions and the answer loop](#client-questions-and-the-answer-loop)
 - [The Streamlit session pattern](#the-streamlit-session-pattern)
 - [Visual theme](#visual-theme)
+- [Hand corrections and the source of truth](#hand-corrections-and-the-source-of-truth)
 - [Retired: rule-based readers and learned bank profiles](#retired-rule-based-readers-and-learned-bank-profiles)
 - [Testing](#testing)
 
@@ -277,6 +278,29 @@ Two hard constraints worth knowing before touching this:
   used to verify every selector in `theme.py`; bump it deliberately, and
   re-check the selectors against the new version's frontend bundle (or a
   live render) before trusting them again.
+
+## Hand corrections and the source of truth
+
+`core/workpaper.py` keeps, per client, only the source of truth: the
+documents the AI transcribed (plus an untouched copy), every hand
+correction (`manual_edits`), and every client answer
+(`answered_questions`). `rebuild()` derives everything else from those on
+every page load: transactions, categories, check payees, reconciliation,
+coverage, and the answer log (answers are replayed in order). Because
+nothing derived is ever edited directly, a hand correction can't wipe out
+a client answer, and changing the tax year updates coverage everywhere.
+
+Each transcribed row gets a stable `row_id` at ingestion, so edits, adds,
+and deletes are logged against the row they touched.
+`save_corrections()` logs each change (before/after), marks the document
+`corrected_by_hand`, and clears any earlier "checked by hand" mark, since
+that note no longer describes what's there. `undo_corrections()` restores
+the AI's copy. `mark_checked_by_hand()` requires a note and gives the
+statement the status "Checked by Hand", which counts as OK in the summary.
+
+The tab itself (`fix_statements_ui.py`) previews the verification on the
+unsaved edits and shows, per row, the balance the rows lead to next to the
+printed one, so the break is visible on the row where it happens.
 
 ## Retired: rule-based readers and learned bank profiles
 

@@ -313,21 +313,31 @@ def _cell_text(value: Any) -> str:
     return str(value).strip()
 
 
+def _csv_rows(raw_bytes: bytes) -> List[List[str]]:
+    """Reads CSV with the standard csv module: rows may have different
+    lengths (bank exports often start with a few account-info lines), and
+    only common separators are considered."""
+    import csv
+    for encoding in ("utf-8-sig", "cp1252", "latin-1"):
+        try:
+            text = raw_bytes.decode(encoding)
+            break
+        except UnicodeDecodeError:
+            continue
+    sample = "\n".join(text.splitlines()[:50])
+    try:
+        delimiter = csv.Sniffer().sniff(sample, delimiters=",;\t|").delimiter
+    except csv.Error:
+        delimiter = ","
+    return [row for row in csv.reader(io.StringIO(text), delimiter=delimiter)]
+
+
 def _spreadsheet_lines(raw_bytes: bytes, filename: str) -> Dict[str, List[str]]:
     import pandas as pd
     ext = _extension(filename)
     try:
         if ext == ".csv":
-            frame = None
-            for encoding in ("utf-8-sig", "latin-1"):
-                try:
-                    frame = pd.read_csv(io.BytesIO(raw_bytes), header=None, dtype=str,
-                                        keep_default_na=False, encoding=encoding,
-                                        sep=None, engine="python")
-                    break
-                except UnicodeDecodeError:
-                    continue
-            sheets = {"CSV": frame}
+            sheets = {"CSV": _csv_rows(raw_bytes)}
         else:
             sheets = pd.read_excel(io.BytesIO(raw_bytes), sheet_name=None, header=None, dtype=object)
     except Exception as e:
@@ -340,7 +350,8 @@ def _spreadsheet_lines(raw_bytes: bytes, filename: str) -> Dict[str, List[str]]:
         if frame is None:
             continue
         lines = []
-        for row_number, row in enumerate(frame.itertuples(index=False), start=1):
+        rows = frame if isinstance(frame, list) else frame.itertuples(index=False)
+        for row_number, row in enumerate(rows, start=1):
             cells = [_cell_text(v) for v in row]
             while cells and not cells[-1]:
                 cells.pop()

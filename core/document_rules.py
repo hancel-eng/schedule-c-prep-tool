@@ -85,6 +85,13 @@ def verify_statement(doc: Dict[str, Any]) -> Dict[str, Any]:
         notes = ["This file has no balances or totals printed, so the app can't double-check it. "
                  "Please look over its rows."]
 
+    checked = doc.get("checked_by_hand")
+    if checked and status != "Reconciled":
+        status = "Checked by Hand"
+        notes.insert(0, f"Checked by hand ({checked.get('when', '')}): {checked.get('note') or 'no note'}.")
+    if doc.get("corrected_by_hand"):
+        notes.append("Some numbers on this statement were corrected by hand (see Manual Corrections).")
+
     unreadable = doc.get("could_not_read") or []
     if unreadable:
         notes.append("Please double-check by eye: the AI could not read everything clearly. " + " ".join(unreadable))
@@ -114,6 +121,25 @@ def _total_check(word: str, declared: float, found: float, difference: float) ->
     direction = "missing" if difference > 0 else "too much"
     return False, (f"The statement says total {word} is {_money(declared)}, but the rows found add up to "
                    f"{_money(found)} ({_money(abs(difference))} {direction}).")
+
+
+def row_balance_marks(doc: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """For each row: the balance the rows so far lead to, and whether it
+    matches the balance printed on that row (None if none is printed)."""
+    is_card = doc["document_kind"] == "credit_card_statement"
+    balance = doc.get("opening_balance")
+    marks = []
+    for row in doc.get("transactions") or []:
+        amount = row.get("amount") or 0.0
+        step = amount if (row.get("direction") == "credit") != is_card else -amount
+        if balance is not None:
+            balance = round(balance + step, 2)
+        printed = row.get("running_balance")
+        matches = None if printed is None or balance is None else abs(balance - printed) <= TOLERANCE
+        marks.append({"expected_balance": balance, "matches": matches})
+        if printed is not None:
+            balance = printed
+    return marks
 
 
 def _running_balance_check(opening: Optional[float], rows: List[Dict[str, Any]],
@@ -293,6 +319,8 @@ def summarize(results: List[Dict[str, Any]]) -> Dict[str, Any]:
     reconciled = [r for r in results if r["status"] == "Reconciled"]
     problems = [r for r in results if r["status"] == "Discrepancy"]
     unchecked = [r for r in results if r["status"] == "Not Reconcilable"]
+    by_hand = [r for r in results if r["status"] == "Checked by Hand"]
+    reconciled = reconciled + by_hand
     if problems:
         status = "Discrepancy"
         message = f"{len(problems)} of {len(results)} statement(s) don't add up yet. Fix them before trusting the totals."
@@ -304,7 +332,11 @@ def summarize(results: List[Dict[str, Any]]) -> Dict[str, Any]:
         status = "Partially Reconciled"
         message = f"{len(reconciled)} of {len(results)} statement(s) add up; {len(unchecked)} had no totals to check."
     else:
-        status, message = "Reconciled", f"All {len(results)} statement(s) add up exactly."
+        status = "Reconciled"
+        message = f"All {len(results)} statement(s) add up exactly."
+        if by_hand:
+            message = (f"All {len(results)} statement(s) are OK: {len(results) - len(by_hand)} add up exactly, "
+                       f"{len(by_hand)} checked by hand.")
     return {"status": status, "message": message, "reconciled_count": len(reconciled),
             "discrepancy_count": len(problems), "unverifiable_count": len(unchecked),
             "total_documents": len(results), "results": results}

@@ -8,7 +8,7 @@ from typing import List, Dict, Any
 from core.deduplication import FilenameDeduplicator
 from core.ai_reader import SUPPORTED_EXTENSIONS, read_files
 from core.ai_errors import missing_api_key
-from core import document_rules
+from core import document_rules, workpaper
 from core.tax_categorizer import TaxCategorizer, SCHEDULE_C_CATEGORIES
 from core.exception_analyzer import ExceptionAnalyzer
 from core.question_generator import ClientQuestionGenerator
@@ -16,11 +16,12 @@ from core.excel_exporter import ExcelWorkpaperExporter
 from core.answer_applier import apply_client_answers, ANSWER_OPTIONS, uncategorized_expense_answer_options
 from core.check_matcher import match_checks_to_transactions
 from theme import CSS, render_progress_steps
+import fix_statements_ui
 
 # Bumped on every meaningful change to this file, so whoever is looking at the
 # app can tell which version is running just by glancing at the sidebar --
 # there is no separate deploy/build pipeline that would otherwise show that.
-APP_VERSION = "v15"
+APP_VERSION = "v16"
 
 
 def _running_commit() -> str:
@@ -143,6 +144,11 @@ def _new_client_state(name: str = "") -> Dict[str, Any]:
         "check_records": [],
         "unmatched_check_records": [],
         "supporting_documents": [],
+        # Source of truth (see core/workpaper.py); everything above is
+        # derived from these by rules on every run.
+        "files": {},
+        "manual_edits": [],
+        "answered_questions": [],
     }
 
 
@@ -367,60 +373,14 @@ if uploaded_files or has_existing_data:
             )
             file_progress_slot.empty()
 
-            parsed_transactions: List[Dict[str, Any]] = []
-            diagnostics_log = []
-            reconciliation_results: List[Dict[str, Any]] = []
-            check_records: List[Dict[str, Any]] = []
-            supporting_documents: List[Dict[str, Any]] = []
-            statement_periods = []
-
-            for filename, read in read_results.items():
-                usage = read["usage"]
-                usage_note = (f"AI use: {usage['input_tokens']:,} tokens in, "
-                              f"{usage['output_tokens']:,} tokens out, {read['part_count']} part(s).")
-                if read["error"]:
-                    diagnostics_log.append({"file": filename, "type": "Not read", "count": 0,
-                                            "details": ["Nothing from this file was counted.", usage_note],
-                                            "ai_error": read["error"]})
-                    continue
-                ruled = document_rules.apply_rules(filename, read["documents"], categorizer)
-                parsed_transactions.extend(ruled["transactions"])
-                reconciliation_results.extend(ruled["reconciliation_results"])
-                check_records.extend(ruled["check_records"])
-                supporting_documents.extend(ruled["supporting_documents"])
-                statement_periods.extend(ruled["statement_periods"])
-                found = [document_rules.document_label(d) for d in read["documents"]] or ["nothing financial"]
-                diagnostics_log.append({"file": filename, "type": "Read by AI", "count": len(ruled["transactions"]),
-                                        "details": [f"Found: {', '.join(found)}."] + ruled["notes"] + [usage_note],
-                                        "ai_error": None})
-
-            # Fill in the payee on every "Check #NNNN" line item using any
-            # check copies uploaded alongside the statements.
-            matched_count, unmatched_checks = match_checks_to_transactions(check_records, parsed_transactions)
-
-            mark_steps("coverage", f"{len(parsed_transactions):,} transactions from {len(unique_files)} file(s)")
-            coverage_info = document_rules.check_12_month_coverage(
-                document_rules.months_covered(parsed_transactions, statement_periods, int(tax_year)))
-
-            mark_steps("reconcile", coverage_info['status_message'])
-            reconciliation_summary = document_rules.summarize(reconciliation_results)
-            mark_steps(None)  # all 4 steps done
-
-            # A genuinely new set of files starts this client fresh -- any
-            # prior corrections belonged to the previous upload and don't
-            # carry over.
+            mark_steps("coverage", "Checking which months are covered")
             client_state["upload_signature"] = upload_signature
-            client_state["all_transactions"] = parsed_transactions
-            client_state["correction_log"] = []
-            client_state["diagnostics_log"] = diagnostics_log
-            client_state["coverage_info"] = coverage_info
-            client_state["reconciliation_summary"] = reconciliation_summary
-            client_state["reconciliation_results"] = reconciliation_results
+            client_state["files"] = workpaper.ingest(read_results)
+            client_state["manual_edits"] = []
+            client_state["answered_questions"] = []
             client_state["duplicates_flagged"] = duplicates_flagged
             client_state["unique_file_count"] = len(unique_files)
-            client_state["check_records"] = check_records
-            client_state["unmatched_check_records"] = unmatched_checks
-            client_state["supporting_documents"] = supporting_documents
+            mark_steps(None)  # all 4 steps done
 
         # Rerun into the branch below on a clean script run, rather than
         # falling through inline -- the rest of the page always reads from
@@ -430,6 +390,11 @@ if uploaded_files or has_existing_data:
 
     # already_processed is True here -- either it already was, or the
     # processing block above just made it so and rerun into this same branch.
+    # Rebuilt from the source of truth on every run (rules only, fast), so a
+    # hand correction, a client answer, or a changed tax year is reflected
+    # everywhere at once.
+    client_state.update(workpaper.rebuild(
+        client_state["files"], client_state["answered_questions"], int(tax_year), categorizer))
     all_transactions: List[Dict[str, Any]] = client_state["all_transactions"]
     diagnostics_log = client_state["diagnostics_log"]
     coverage_info = client_state["coverage_info"]
@@ -505,7 +470,8 @@ if uploaded_files or has_existing_data:
         st.warning(f"**12-Month Coverage Warning:** {coverage_info['status_message']}")
 
     if recon_status == "Discrepancy":
-        st.error(f"**Reconciliation Discrepancy:** {reconciliation_summary['message']}")
+        st.error(f"**Reconciliation Discrepancy:** {reconciliation_summary['message']} "
+                 "Open the **Fix Statements** tab below to correct them.")
     elif recon_status not in ("Reconciled",):
         st.warning(f"**Reconciliation — {recon_status}:** {reconciliation_summary['message']}")
 
@@ -649,12 +615,17 @@ if uploaded_files or has_existing_data:
     # true to the same declutter principle as the audit expander: nothing
     # competes for attention unless it's relevant to this client.
     has_supporting_docs = bool(check_records or unmatched_check_records or supporting_documents)
-    tab_labels = ["Client Inquiry Questions", "Schedule C Summary", "Non-P&L Transfers"]
+    problem_count = reconciliation_summary.get("discrepancy_count", 0)
+    fix_label = f"Fix Statements ({problem_count} to fix)" if problem_count else "Fix Statements"
+    tab_labels = [fix_label, "Client Inquiry Questions", "Schedule C Summary", "Non-P&L Transfers"]
     if has_supporting_docs:
         tab_labels.append("Supporting Documents")
     tabs = st.tabs(tab_labels)
-    tab_questions, tab_summary, tab_nonpnl = tabs[0], tabs[1], tabs[2]
-    tab_supporting = tabs[3] if has_supporting_docs else None
+    tab_fix, tab_questions, tab_summary, tab_nonpnl = tabs[0], tabs[1], tabs[2], tabs[3]
+    tab_supporting = tabs[4] if has_supporting_docs else None
+
+    with tab_fix:
+        fix_statements_ui.render(client_state, active_client_key)
 
     with tab_questions:
         st.caption(
@@ -675,11 +646,11 @@ if uploaded_files or has_existing_data:
             column of every editor) and hand off to the same apply/rerun
             logic, so there's only one place that talks to
             apply_client_answers and session_state."""
-            updated_transactions, new_log_entries = apply_client_answers(all_transactions, answered_questions)
+            _, new_log_entries = apply_client_answers(all_transactions, answered_questions)
             applied_count = sum(1 for e in new_log_entries if e["applied"])
-
-            client_state["all_transactions"] = updated_transactions
-            client_state["correction_log"] = client_state["correction_log"] + new_log_entries
+            if applied_count:
+                client_state["answered_questions"] = client_state["answered_questions"] + [
+                    q for q in answered_questions if (q.get("answer") or "").strip()]
 
             # st.rerun() immediately abandons the rest of this script run, so
             # a message shown right before it would never actually be visible
@@ -1017,7 +988,8 @@ if uploaded_files or has_existing_data:
         coverage_info=coverage_info,
         duplicates_info=duplicates_flagged,
         reconciliation_summary=reconciliation_summary,
-        correction_log=correction_log
+        correction_log=correction_log,
+        manual_edits=client_state["manual_edits"],
     )
 
     st.download_button(

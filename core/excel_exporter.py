@@ -14,7 +14,8 @@ class ExcelWorkpaperExporter:
                            exceptions_dict: Dict[str, Any], questions: List[Dict[str, str]],
                            coverage_info: Dict[str, Any], duplicates_info: List[Dict[str, str]],
                            reconciliation_summary: Dict[str, Any] = None,
-                           correction_log: List[Dict[str, Any]] = None) -> io.BytesIO:
+                           correction_log: List[Dict[str, Any]] = None,
+                           manual_edits: List[Dict[str, Any]] = None) -> io.BytesIO:
         """
         Creates an openpyxl Workbook and returns a BytesIO buffer.
         """
@@ -357,6 +358,24 @@ class ExcelWorkpaperExporter:
                     value="No client answers have been applied yet. Answer the questions in "
                           "the app's Client Questions tab and click \"Apply Client Answers & "
                           "Recalculate\" to populate this sheet.").font = normal_font
+
+        ws8 = wb.create_sheet(title="Manual Corrections")
+        ws8.cell(row=1, column=1, value="CORRECTIONS MADE BY HAND IN THE APP").font = title_font
+        ws8.cell(row=2, column=1,
+                value="Every number a preparer changed after the AI read the documents, with the "
+                      "value before and after.").font = subtitle_font
+        edit_headers = ["When", "File", "Statement", "Change", "Before", "After"]
+        for c_idx, h_text in enumerate(edit_headers, start=1):
+            cell = ws8.cell(row=4, column=c_idx, value=h_text)
+            cell.font = header_font
+            cell.fill = header_fill
+        for r_idx, entry in enumerate(manual_edits or [], start=5):
+            values = [entry.get("when"), entry.get("file"), entry.get("document"), entry.get("change"),
+                      entry.get("before"), entry.get("after")]
+            for c_idx, value in enumerate(values, start=1):
+                ws8.cell(row=r_idx, column=c_idx, value=value).font = normal_font
+        if not manual_edits:
+            ws8.cell(row=5, column=1, value="No corrections were made by hand.").font = normal_font
 
         # Auto-adjust column widths for all worksheets
         for ws in wb.worksheets:

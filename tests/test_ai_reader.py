@@ -198,3 +198,15 @@ def test_ai_request_uses_high_detail_and_the_part_only(monkeypatch):
     sent = base64.b64decode(content[0]["file_data"].split(",", 1)[1])
     assert len(PdfReader(io.BytesIO(sent)).pages) == 2
     assert "pages 5-6 of 6" in content[1]["text"] and "2025" in content[1]["text"]
+
+
+@pytest.mark.parametrize("data, expected", [
+    (b"Description\nOffice Depot\nStaples\n", ["R1: Description", "R2: Office Depot", "R3: Staples"]),
+    (b"Date;Amount\n2025-01-01;5,00\n", ["R1: Date | Amount", "R2: 2025-01-01 | 5,00"]),
+    (b'Account,1234\n\nDate,Description,Amount\n2025-01-02,"Shell, Inc",-40.00\n',
+     ["R1: Account | 1234", "R3: Date | Description | Amount", "R4: 2025-01-02 | Shell, Inc | -40.00"]),
+    ("Fecha,Descripción\n2025-01-02,Café\n".encode("cp1252"),
+     ["R1: Fecha | Descripción", "R2: 2025-01-02 | Café"]),
+])
+def test_csv_edge_cases_are_read_exactly(data, expected):
+    assert plan_parts(data, "export.csv").parts[0].lines == expected
