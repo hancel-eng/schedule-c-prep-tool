@@ -228,7 +228,7 @@ child or an elderly person", in plain everyday words. What that became:
   out leftovers from the previous page are hidden by CSS
   (`[data-stale="true"]`) so Stop never looks disabled.
 - **Type and color.** Atkinson Hyperlegible Next (made for low-vision
-  readers) at 18px everywhere, big buttons (48px tall), a deep pine
+  readers) at 15px, compact buttons (38px tall), a deep pine
   sidebar, and color only for state: green done, amber needs you, red
   problem. One light theme on purpose, painted explicitly.
 - **Numbers as HTML cards** (`theme.cards_html`) instead of `st.metric`,

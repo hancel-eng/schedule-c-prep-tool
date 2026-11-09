@@ -27,7 +27,7 @@ import fix_statements_ui
 
 # Bumped on every meaningful change to this file, so whoever is looking at the
 # app can tell which version is running just by glancing at the sidebar.
-APP_VERSION = "v18"
+APP_VERSION = "v19"
 
 
 def _running_commit() -> str:

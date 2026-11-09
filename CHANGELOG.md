@@ -8,6 +8,14 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for how the current system works,
 and [README.md](README.md#known-limitations--roadmap) for what's still
 open.
 
+## 2026-11-09 — Smaller text, more room
+
+Feedback after the redesign: the 18px text and big buttons took so much
+space that screens looked crowded, which made the app harder to navigate.
+Base text is now 15px, headings, buttons, step picker, cards, the
+"What to do next" card and the reading panel shrank to match, and
+padding was tightened. Same font, colors and layout.
+
 ## 2026-11-09 — Simple, plain-language redesign (AI-first rebuild, step 6)
 
 Requested by the client: very intuitive and simple, "as if for a child or
