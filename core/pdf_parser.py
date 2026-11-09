@@ -43,6 +43,7 @@ class FinancialDocumentData(BaseModel):
     total_checks: Optional[float] = 0.0
     total_fees: Optional[float] = 0.0
     diagnostics_notes: List[str] = Field(default_factory=list)
+    ai_error: Optional[Dict[str, str]] = None
     transactions: List[TransactionItem] = Field(default_factory=list)
 
 # Backward Compatibility Aliases for Pydantic Models
@@ -246,6 +247,7 @@ class BankPDFParser:
             "document_type": "bank_statement",
             "check_record": None,
             "supporting_document": None,
+            "ai_error": doc_data.ai_error,
         }
         if idp_result:
             result["document_type"] = idp_result["document_type"]
@@ -1216,13 +1218,15 @@ class BankPDFParser:
             )
             return fallback_data, None
 
+        from core.ai_errors import AIExtractionError
         try:
             idp_payload = classify_and_extract(raw_bytes, filename)
         except Exception as e:
-            fallback_data.diagnostics_notes.append(
-                f"Unrecognized document format; AI document processing failed ({e}). "
-                f"Extraction below may be incomplete -- verify manually via Reconciliation QC."
-            )
+            err = e if isinstance(e, AIExtractionError) else AIExtractionError(
+                "UNKNOWN_AI_ERROR", "Something unexpected went wrong while the AI was reading this file.",
+                "Send the technical detail to whoever maintains the app.", f"{type(e).__name__}: {e}")
+            fallback_data.ai_error = err.to_dict()
+            fallback_data.diagnostics_notes.append(f"AI reading failed: {err}")
             return fallback_data, None
 
         metadata = idp_payload.get("processing_metadata") or {}

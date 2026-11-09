@@ -21,7 +21,7 @@ from theme import CSS, render_progress_steps
 # Bumped on every meaningful change to this file, so whoever is looking at the
 # app can tell which version is running just by glancing at the sidebar --
 # there is no separate deploy/build pipeline that would otherwise show that.
-APP_VERSION = "v13"
+APP_VERSION = "v14"
 
 
 def _running_commit() -> str:
@@ -449,7 +449,7 @@ if uploaded_files or has_existing_data:
                         reconciliation_results.append(reconciler.check_document(
                             filename, res['statement_summary'], res['transactions']
                         ))
-                        diagnostics_log.append({"file": filename, "type": "PDF", "count": len(res['transactions']), "details": res.get('diagnostics')})
+                        diagnostics_log.append({"file": filename, "type": "PDF", "count": len(res['transactions']), "details": res.get('diagnostics'), "ai_error": res.get('ai_error')})
 
                 elif filename.lower().endswith(('.xlsx', '.xls', '.csv')):
                     res = sheet_parser.parse_spreadsheet(file_obj, filename)
@@ -543,6 +543,23 @@ if uploaded_files or has_existing_data:
     ]
 
     st.caption(f"{len(questions)} question(s) for the client")
+
+    ai_failures = [e for e in diagnostics_log if e.get("ai_error")]
+    if ai_failures:
+        st.error(
+            f"**The AI could not read {len(ai_failures)} file(s).** "
+            "The numbers from these files are not reliable. Here is what went wrong:"
+        )
+        for entry in ai_failures:
+            err = entry["ai_error"]
+            st.markdown(
+                f"- **{entry['file']}** — {err['message']}  \n"
+                f"  **What to do:** {err['fix']}  \n"
+                f"  `Error code: {err['code']}`"
+            )
+            if err.get("detail"):
+                with st.expander(f"Technical detail for {entry['file']}"):
+                    st.code(err["detail"], language=None)
 
     if duplicates_flagged:
         for dup in duplicates_flagged:

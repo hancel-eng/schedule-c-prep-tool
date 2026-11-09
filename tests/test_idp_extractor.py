@@ -13,12 +13,14 @@ from core.idp_extractor import (
     bank_statement_payload_to_transactions,
 )
 from core.tax_categorizer import TaxCategorizer
+from core.ai_errors import AIExtractionError
 
 
 def test_classify_and_extract_raises_clean_error_without_api_key(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    with pytest.raises(RuntimeError, match="OPENAI_API_KEY"):
+    with pytest.raises(AIExtractionError) as info:
         classify_and_extract(b"%PDF-fake", "statement.pdf")
+    assert info.value.code == "NO_API_KEY"
 
 
 def test_classify_and_extract_uses_mocked_client(monkeypatch):
@@ -108,8 +110,9 @@ def test_classify_and_extract_raises_when_output_is_empty(monkeypatch):
     fake_openai_module = type("FakeOpenAIModule", (), {"OpenAI": FakeOpenAIClient})
     monkeypatch.setitem(sys.modules, "openai", fake_openai_module)
 
-    with pytest.raises(RuntimeError, match="did not return a structured extraction"):
+    with pytest.raises(AIExtractionError) as info:
         classify_and_extract(b"%PDF-fake", "statement.pdf")
+    assert info.value.code == "EMPTY_ANSWER"
 
 
 # --- verify_bank_statement_balance_chain ------------------------------------

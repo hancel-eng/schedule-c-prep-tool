@@ -8,6 +8,24 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for how the current system works,
 and [README.md](README.md#known-limitations--roadmap) for what's still
 open.
 
+## 2026-11-09 — Every AI failure now has a clear error code (AI-first rebuild, step 1)
+
+First step of the AI-first rebuild (AI becomes the only reader; rules do
+everything after extraction). Before this, an AI failure was a bare
+exception string buried in a log, and a cut-off answer was not detected
+at all -- `output_text` was parsed whenever it happened to be valid JSON.
+
+- New `core/ai_errors.py`: `AIExtractionError` with a stable code, a
+  plain-English message, what to do, and the technical detail. Maps every
+  openai SDK exception (bad key, no permission, out of credit, rate limit,
+  model not found, file rejected, timeout, no connection, server error).
+- `classify_and_extract` now inspects the response itself: `status ==
+  "incomplete"` (cut off or content-filtered), `status == "failed"`, a
+  refusal, an empty answer, or invalid JSON each raise their own code. A
+  partial answer is never used.
+- The app shows a red box per failed file with the message, the fix, and
+  the code, plus an expandable technical detail.
+
 ## 2026-10-01 — Two confirmed defects: credit-card routing skipped all verification, and diagnostics were never shown
 
 After the model switch below still didn't change the client's live Wells

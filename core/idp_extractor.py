@@ -29,6 +29,8 @@ import json
 import os
 from typing import Any, Dict, List, Optional
 
+from core import ai_errors
+
 LLM_MODEL = "gpt-6-astra"
 
 SYSTEM_PROMPT = """You are an expert system in Multiclass Intelligent \
@@ -214,46 +216,66 @@ def _get_api_key() -> Optional[str]:
 def classify_and_extract(raw_bytes: bytes, filename: str) -> Dict[str, Any]:
     """Sends one document to OpenAI and returns the raw structured payload
     (processing_metadata + structured_data + quality_validation) exactly as
-    produced -- unmapped, unverified. Raises RuntimeError on a missing key/
-    package or an empty response; callers decide what to do with that, and
-    must independently verify the numbers before trusting them (see
-    verify_bank_statement_balance_chain)."""
+    produced -- unmapped, unverified. Every failure, including a response
+    that was cut off or refused, raises AIExtractionError with a specific
+    code; a partial answer is never returned. Callers must still verify the
+    numbers independently (see verify_bank_statement_balance_chain)."""
     api_key = _get_api_key()
     if not api_key:
-        raise RuntimeError(
-            "OPENAI_API_KEY is not set -- add it to Streamlit secrets "
-            "(see .streamlit/secrets.toml.example) to enable AI document processing."
-        )
-    try:
-        import openai
-    except ImportError as e:
-        raise RuntimeError("The 'openai' package is not installed.") from e
+        raise ai_errors.missing_api_key()
+    import openai
 
     client = openai.OpenAI(api_key=api_key)
     b64 = base64.standard_b64encode(raw_bytes).decode("utf-8")
     media_type = "application/pdf" if filename.lower().endswith(".pdf") else "image/png"
 
-    response = client.responses.create(
-        model=LLM_MODEL,
-        instructions=SYSTEM_PROMPT,
-        input=[{
-            "role": "user",
-            "content": [
-                {
-                    "type": "input_file",
-                    "filename": filename,
-                    "file_data": f"data:{media_type};base64,{b64}",
-                },
-                {"type": "input_text", "text": f"Classify and extract this document (filename: {filename})."},
-            ],
-        }],
-        text={"format": RESPONSE_JSON_SCHEMA},
-    )
+    try:
+        response = client.responses.create(
+            model=LLM_MODEL,
+            instructions=SYSTEM_PROMPT,
+            input=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_file",
+                        "filename": filename,
+                        "file_data": f"data:{media_type};base64,{b64}",
+                    },
+                    {"type": "input_text", "text": f"Classify and extract this document (filename: {filename})."},
+                ],
+            }],
+            text={"format": RESPONSE_JSON_SCHEMA},
+        )
+    except openai.OpenAIError as e:
+        raise ai_errors.from_openai_exception(e) from e
 
-    if not response.output_text:
-        raise RuntimeError("The model did not return a structured extraction.")
+    return parse_structured_response(response)
 
-    return json.loads(response.output_text)
+
+def parse_structured_response(response: Any) -> Dict[str, Any]:
+    """Accepts only a complete, non-refused, valid-JSON answer."""
+    status = getattr(response, "status", None)
+    if status == "incomplete":
+        details = getattr(response, "incomplete_details", None)
+        reason = getattr(details, "reason", None)
+        if reason == "content_filter":
+            raise ai_errors.content_blocked(f"status=incomplete, reason={reason}")
+        raise ai_errors.answer_cut_off(f"status=incomplete, reason={reason}")
+    if status == "failed":
+        raise ai_errors.response_failed(str(getattr(response, "error", "") or "status=failed"))
+
+    for item in getattr(response, "output", None) or []:
+        for content in getattr(item, "content", None) or []:
+            if getattr(content, "type", None) == "refusal":
+                raise ai_errors.ai_refused(getattr(content, "refusal", "") or "")
+
+    text = getattr(response, "output_text", "") or ""
+    if not text.strip():
+        raise ai_errors.empty_answer(f"status={status}")
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as e:
+        raise ai_errors.unreadable_answer(f"{e}; answer starts with: {text[:200]!r}") from e
 
 
 def verify_bank_statement_balance_chain(bank_statement: Dict[str, Any],
