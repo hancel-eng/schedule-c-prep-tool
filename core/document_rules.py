@@ -25,7 +25,7 @@ def _effective_summary_total(totals: List[Dict[str, Any]], effect: str) -> Optio
     """Sum of the printed summary lines for one effect. If the box prints
     both a "Total ..." line and the lines it adds up, only the total is
     used, so nothing is counted twice."""
-    lines = [t for t in totals if t["effect"] == effect]
+    lines = [t for t in totals if t["effect"] == effect and abs(t["amount"]) > TOLERANCE]
     if not lines:
         return None
     for line in lines:
@@ -85,9 +85,9 @@ def verify_statement(doc: Dict[str, Any]) -> Dict[str, Any]:
         notes = ["This file has no balances or totals printed, so the app can't double-check it. "
                  "Please look over its rows."]
 
-    unreadable = doc.get("unreadable_or_notes") or []
+    unreadable = doc.get("could_not_read") or []
     if unreadable:
-        notes.append("The AI noted: " + " ".join(unreadable))
+        notes.append("Please double-check by eye: the AI could not read everything clearly. " + " ".join(unreadable))
 
     return {
         "source_file": doc.get("source_file"),
@@ -249,8 +249,8 @@ def apply_rules(filename: str, documents: List[Dict[str, Any]], categorizer) -> 
                                "line_item_count": len(data.get("line_items") or []),
                                "check_status": status, "check_notes": check_note, "source_file": filename})
         else:
-            what = "; ".join(doc.get("unreadable_or_notes") or []) or "not a financial document the app uses"
-            notes.append(f"Found something that isn't a statement, check, invoice, or receipt ({what}). Nothing was counted from it.")
+            what = doc.get("what_it_is") or "not a financial document the app uses"
+            notes.append(f"Skipped a part that isn't a statement, check, invoice, or receipt ({what}). Nothing was counted from it.")
     if not documents:
         notes.append("The AI found nothing financial in this file. Nothing was counted from it.")
     return {

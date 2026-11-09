@@ -16,7 +16,7 @@ def _statement(rows, kind="bank_statement", opening=None, closing=None, totals=N
            "account_holder": None, "account_last4": "9999", "period_start": "2025-03-01",
            "period_end": "2025-03-31", "opening_balance": opening, "closing_balance": closing,
            "summary_totals": totals or [], "transactions": rows, "check": None, "invoice_or_receipt": None,
-           "unreadable_or_notes": [], "source_file": "s.pdf"}
+           "what_it_is": None, "could_not_read": [], "source_file": "s.pdf"}
     doc.update(extra)
     return doc
 
@@ -100,13 +100,13 @@ def test_check_row_without_the_word_check_gets_a_matchable_payee():
 def test_apply_rules_sorts_checks_receipts_and_statements():
     check = {"document_kind": "check", "check": {"payee": "Joe Plumbing", "drawer": "Acme", "issue_date": "2025-03-02",
                                                   "amount": 75.0, "amount_in_words": None, "check_number": "1043",
-                                                  "memo": None}, "unreadable_or_notes": []}
+                                                  "memo": None}, "what_it_is": None, "could_not_read": []}
     receipt = {"document_kind": "receipt", "invoice_or_receipt": {
         "issuer": "Store", "customer": None, "date": "2025-03-03", "document_number": "9",
         "subtotal": 10.0, "tax": 0.7, "total": 10.7,
         "line_items": [{"description": "Paper", "quantity": 1, "unit_price": 10.0, "line_total": 10.0}]},
-        "unreadable_or_notes": []}
-    other = {"document_kind": "other", "unreadable_or_notes": ["A blank cover page."]}
+        "what_it_is": None, "could_not_read": []}
+    other = {"document_kind": "other", "what_it_is": "A blank cover page.", "could_not_read": []}
     result = rules.apply_rules("mix.pdf", [_statement([_row(75.0, "debit", "Check 1043")]), check, receipt, other],
                                TaxCategorizer())
     assert len(result["transactions"]) == 1
@@ -126,3 +126,17 @@ def test_coverage_counts_only_the_tax_year():
     months = rules.months_covered(txs, [("2025-01-01", "2025-02-28")], 2025)
     assert months == [1, 2]
     assert "Mar" in rules.check_12_month_coverage(months)["status_message"]
+
+
+def test_zero_summary_line_from_another_box_is_ignored():
+    rows = [_row(30.0, "debit")]
+    totals = [_total("Withdrawals", 30.0, "debit"), _total("You paid", 0.0, "debit")]
+    assert rules.verify_statement(_statement(rows, totals=totals))["status"] == "Reconciled"
+
+
+def test_unreadable_spots_are_flagged_for_a_human_check():
+    doc = _statement([_row(30.0, "debit")], opening=100.0, closing=70.0,
+                     could_not_read=["Amount on row 3 is smudged."])
+    result = rules.verify_statement(doc)
+    assert result["status"] == "Reconciled"
+    assert "double-check by eye" in result["notes"] and "smudged" in result["notes"]

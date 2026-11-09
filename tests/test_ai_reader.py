@@ -26,7 +26,7 @@ def _doc(kind="bank_statement", rows=None, cont=False, **fields):
         "document_kind": kind, "continues_from_previous_part": cont, "issuer_name": None,
         "account_holder": None, "account_last4": None, "period_start": None, "period_end": None,
         "opening_balance": None, "closing_balance": None, "summary_totals": [],
-        "transactions": rows or [], "check": None, "invoice_or_receipt": None, "unreadable_or_notes": [],
+        "transactions": rows or [], "check": None, "invoice_or_receipt": None, "what_it_is": None, "could_not_read": [],
     }
     base.update(fields)
     return base

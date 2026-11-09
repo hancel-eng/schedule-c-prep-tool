@@ -64,7 +64,8 @@ entry to "documents":
   profit_and_loss = a profit and loss (income statement) report.
   transaction_list = any other list of transactions: a spreadsheet, a ledger, \
 a bank export, a register.
-  other = anything else; say what it is in "unreadable_or_notes".
+  other = anything else (cover pages, legal disclosures, blank worksheets, \
+letters); say briefly what it is in "what_it_is".
 - continues_from_previous_part: true only when this entry continues a document \
 that started before the part you received (for example pages 5-8 of a \
 statement whose first page you were not given).
@@ -73,13 +74,16 @@ period_start, period_end (YYYY-MM-DD): exactly as printed; null if not shown \
 in this part.
 - opening_balance / closing_balance: as printed (on a credit card: previous \
 balance / new balance). null if not in this part.
-- summary_totals: every total printed in the statement's summary or overview \
-box, one entry per printed line, for example "Deposits and additions", \
+- summary_totals: every total printed in the statement's account summary or \
+activity summary box (the box that shows how the balance moved), one entry \
+per printed line, for example "Deposits and additions", \
 "ATM & debit card withdrawals", "Checks paid", "Fees", "Payments", \
 "Purchases", "Interest charged". Do not include the opening or closing \
 balance. effect = "credit" if that total adds money to a bank account or \
 lowers what is owed on a credit card, otherwise "debit". item_count only if a \
-count is printed beside it. Empty list if there is no summary box in this part.
+count is printed beside it. Never take totals from any other box, such as a \
+monthly service fee box, fee criteria, rewards, or interest rate tables. \
+Empty list if there is no account summary box in this part.
 - transactions: EVERY transaction row, in the order printed. That includes \
 rows in check listings, fee sections, and interest lines. Never include \
 headings, column titles, subtotals, totals, daily balance summaries, or the \
@@ -105,8 +109,12 @@ Never include total, subtotal, gross profit, or net lines.
 amount_in_words, check_number, memo. Otherwise null.
 - invoice_or_receipt: only for an invoice or receipt: issuer, customer, date, \
 document_number, subtotal, tax, total, and every line item. Otherwise null.
-- unreadable_or_notes: anything you could not read clearly (smudged, cut \
-off, blurry), each as a short sentence. Empty list if none.
+- what_it_is: for document_kind "other", a short description (for example \
+"Account disclosures and a blank balancing worksheet"). Otherwise null.
+- could_not_read: ONLY places where printed text or numbers could not be read \
+with certainty (smudged, cut off, blurry, covered), each as a short sentence \
+saying where. Never put general information, explanations, or descriptions \
+of the document here. Empty list if everything was readable.
 
 Spreadsheets and text: each data row of a transaction table is one \
 transaction. If money in and money out share one amount column, the sign or \
@@ -189,7 +197,8 @@ _DOCUMENT = _object({
     "transactions": {"type": "array", "items": _TRANSACTION},
     "check": _CHECK,
     "invoice_or_receipt": _INVOICE_OR_RECEIPT,
-    "unreadable_or_notes": {"type": "array", "items": {"type": "string"}},
+    "what_it_is": _nullable("string"),
+    "could_not_read": {"type": "array", "items": {"type": "string"}},
 })
 
 RESPONSE_FORMAT = {
@@ -569,7 +578,7 @@ def _absorb(target: Dict[str, Any], entry: Dict[str, Any]) -> None:
             target["summary_totals"].append(total)
             seen.add(key)
     target["transactions"].extend(entry.get("transactions") or [])
-    target["unreadable_or_notes"].extend(entry.get("unreadable_or_notes") or [])
+    target["could_not_read"].extend(entry.get("could_not_read") or [])
     target["parts"].extend(entry["parts"])
 
 
