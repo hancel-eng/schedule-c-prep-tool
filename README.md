@@ -66,14 +66,9 @@ every bug found along the way fixed and the final numbers checked by hand.
 See [CHANGELOG.md](CHANGELOG.md) for the full history of what was found and
 fixed.
 
-**One thing worth knowing before relying on it for a new client:**
-
-- It can't read a *scanned image* of a statement (a photo of a check, for
-  example) — only PDFs with real, selectable text. There's no OCR yet.
-
-A statement from a bank the tool hasn't seen before used to need a manual
-code fix the first time. It no longer does — see
-[Unrecognized bank formats](#unrecognized-bank-formats) below.
+**Since 2026-11-09 the AI reads every file** (see
+[How files are read](#how-files-are-read)). This was verified on one real
+statement so far; the full 12-month set has not been re-run yet.
 
 See [Known limitations & roadmap](#known-limitations--roadmap) below for
 the complete list.
@@ -184,13 +179,9 @@ client's results past closing the tab, download its Excel workpaper first.
   Needs Review, or Unresolved. Anything short of High Confidence goes to
   the exception/question list instead of being silently assigned a
   category.
-- **Documents are read by deterministic rules, not AI, by default.** Every
-  result can be traced back to exactly why the tool made that call. AI
-  (OpenAI) only ever gets involved for a document the tool genuinely
-  doesn't recognize, and even then only to classify it and transcribe
-  what's printed — never to decide a tax category or a dollar total, and
-  never for a bank already recognized. See
-  [Unrecognized bank formats](#unrecognized-bank-formats).
+- **The AI reads; plain rules decide.** The AI (OpenAI) only transcribes
+  what is printed. Every total, category, check, and question comes from
+  rules you can trace. See [How files are read](#how-files-are-read).
 - **Several clients, one browser session, nothing stored outside it.**
   Switching clients never mixes their data together, and nothing here is
   ever written to a database or disk — closing the tab loses everything,
@@ -208,13 +199,10 @@ theme.py                      Visual design (colors, fonts, layout)
 
 core/                         All the actual business logic, independent
                                of the app — see ARCHITECTURE.md for detail
-  pdf_parser.py                 Reads bank/credit-card statement PDFs
-  bank_profiles.py               Loads/saves a learned bank's header vocabulary
-  idp_extractor.py                 AI fallback: classifies + extracts an unrecognized document
-  check_matcher.py                 Matches a check copy's payee to its statement line item
-  bank_learner.py                 Proposes a reusable profile from a bank-statement transcription
-  github_profile_sync.py          Commits a learned profile to GitHub so it survives a deploy
-  spreadsheet_parser.py         Reads client Excel/CSV files
+  ai_reader.py                  The AI reader: splits files, reads them, stitches them back
+  ai_errors.py                  Turns every AI or file failure into a clear error code
+  document_rules.py             Rules after reading: signs, checks, reconciliation, coverage
+  check_matcher.py              Matches a check copy's payee to its statement line item
   totals_parser.py              Reads client-provided year-end totals
   tax_categorizer.py            Decides which Schedule C line a transaction belongs on
   exception_analyzer.py         Flags what needs a second look
@@ -222,7 +210,6 @@ core/                         All the actual business logic, independent
   question_generator.py         Writes the client question list
   transaction_utils.py          Internal bookkeeping (traces a question back to its transaction)
   answer_applier.py             Applies a client's answer to the workpaper
-  reconciliation.py             Checks extraction against each statement's own totals
   excel_exporter.py             Builds the final Excel file
   deduplication.py              Catches duplicate file uploads
 
@@ -234,39 +221,27 @@ create_sample_data.py         Regenerates the sample files
 For how the pieces above actually work together, see
 **[ARCHITECTURE.md](ARCHITECTURE.md)**.
 
-## Unrecognized bank formats
+## How files are read
 
-Bank/credit-card statements are read by a fast, free, deterministic
-rule-based parser — but every bank prints its statements a little
-differently, and the rules for a brand-new bank used to need a manual code
-fix before that bank's numbers could be trusted.
+Every uploaded file is read by AI (OpenAI `gpt-6-astra`): PDFs (including
+scanned ones), photos (JPG, PNG, WEBP, GIF), Excel and CSV files, and Word
+(.docx) files. The AI only copies what is printed: each row, its amount,
+whether it adds or subtracts, and the balances and totals in the summary
+box. It never decides a category or adds anything up.
 
-That's no longer true. When a document's format doesn't match any bank the
-tool already knows, it automatically:
+Long files are split into small parts (4 PDF pages, or 120 spreadsheet
+lines, at a time) so no AI answer gets cut off. If one still is, that part
+is split again and retried automatically; a cut-off answer is never used.
 
-1. Tries every bank format it has already learned (still free, instant).
-2. If none match, asks OpenAI's AI to look at that one document — not just
-   assuming it's a mis-formatted bank statement, but first figuring out
-   *what it actually is*: a bank statement, a standalone check copy, an
-   invoice, or a receipt. Costs a few cents, and only ever happens for a
-   document the tool genuinely hasn't seen a format for, never for one
-   already recognized.
-   - A **bank statement** is transcribed in full and double-checked
-     against the statement's own declared totals — and, when the statement
-     prints a running balance next to each transaction, against that too,
-     row by row (see
-     [ARCHITECTURE.md](ARCHITECTURE.md#unrecognized-documents-the-multiclass-self-teaching-fallback)
-     for exactly how). If it checks out, the tool figures out that bank's
-     format on its own and saves it, so **every statement from that bank
-     after the first is free** — no AI, no manual fix, no waiting on a
-     developer.
-   - A **check copy** has its payee matched to the matching "Check #..."
-     line item a bank statement's own cleared-checks listing never prints
-     a name for. See [Check copies](#check-copies) below.
-   - An **invoice or receipt** is kept as a supporting document for the
-     preparer's reference, shown in the **Supporting Documents** tab.
+After reading, plain rules check each statement against its own printed
+numbers (starting balance, ending balance, summary totals, and the balance
+on each row) and explain in plain words anything that doesn't add up.
 
-**To turn this on**, add an OpenAI API key to Streamlit secrets:
+If the AI can't read a file, the app shows a red box with what went wrong,
+what to do, and an error code (for example `OUT_OF_CREDIT`,
+`BAD_API_KEY`, `FILE_LOCKED`), and nothing from that file is counted.
+
+The AI key is required:
 
 ```toml
 # .streamlit/secrets.toml (locally) or the app's Settings -> Secrets (on
@@ -274,34 +249,9 @@ tool already knows, it automatically:
 OPENAI_API_KEY = "sk-..."
 ```
 
-See [.streamlit/secrets.toml.example](.streamlit/secrets.toml.example).
-Without a key configured, an unrecognized document is simply flagged for
-manual review instead — nothing else about the tool changes, and a
-recognized bank's statements are never affected either way. A sidebar
-toggle ("Use AI for documents the rule-based parser can't read") lets you
-turn this off per-session even with a key configured, if you'd rather
-review an unrecognized document by hand than spend the few cents.
-
-**For a learned profile to survive a deploy**, also add a GitHub token:
-
-```toml
-GITHUB_TOKEN = "github_pat_..."
-```
-
-Without this second key, a learned profile still works — but only until the
-next time the app is redeployed (Streamlit Community Cloud's filesystem
-resets on every deploy, which would otherwise silently throw away every
-bank learned since the last one). With it, the app commits the learned
-profile straight back to `bank_profiles/` in this repo's `main` branch, so
-every future deploy already has it. The token needs **only** "Contents:
-Read and write" access, scoped to **only** this one repository — it can't
-touch anything else in your GitHub account. Exact setup steps:
-
-1. [github.com/settings/tokens?type=beta](https://github.com/settings/tokens?type=beta) → **Generate new token**.
-2. Give it a name, set an expiration.
-3. **Repository access** → "Only select repositories" → this repo.
-4. **Permissions** → Repository permissions → **Contents** → **Read and write**. Leave everything else as "No access".
-5. Generate, copy the token (shown once), paste it into Streamlit secrets as `GITHUB_TOKEN` above.
+Measured once, on a real 6-page bank statement: about 20,000 tokens in and
+6,000 out, roughly $0.50 at the model's list price. Not yet measured on a
+full year.
 
 ## Check copies
 
@@ -312,7 +262,7 @@ porque cuando el cliente paga con cheque hay que saber quién fue el
 proveedor"* (check copies are needed to know who the vendor was).
 
 Upload the check copy/report alongside the statements for the same client.
-If it's classified as a check (see above — needs `OPENAI_API_KEY`), its
+If the AI finds a check in it, its
 payee is matched to the matching "Check #..." line item automatically:
 check number first, amount only as a fallback and only when it uniquely
 points to one still-unlabeled check — two checks for the same amount is
@@ -323,8 +273,6 @@ never silently attached to the wrong transaction.
 
 ## Known limitations & roadmap
 
-- **No OCR.** A scanned image (not real text) yields zero transactions with
-  no error message — it just looks empty.
 - **The "Level 1" client tier (totals only, no statements) isn't built.**
   Waiting on real example files from Tax Savers before starting this.
 - **Uploading a P&L summary alongside the statements it summarizes
@@ -333,8 +281,9 @@ never silently attached to the wrong transaction.
 - **Transfers between a client's own accounts, across two different
   uploaded files,** are only caught when the transaction's own description
   makes it obvious. There's no cross-file matching by date and amount yet.
-- **A brand-new bank's format is no longer a manual fix.** See
-  [Unrecognized bank formats](#unrecognized-bank-formats) below.
+- **Not yet built:** saving progress between sessions, a Stop button,
+  fixing a mismatched statement inside the app, and the plain-language
+  redesign. These are the next steps of the AI-first rebuild.
 
 See **[CHANGELOG.md](CHANGELOG.md)** for everything that's already been
 found and fixed.

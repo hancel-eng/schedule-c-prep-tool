@@ -6,13 +6,12 @@ import subprocess
 from typing import List, Dict, Any
 
 from core.deduplication import FilenameDeduplicator
-from core.pdf_parser import BankPDFParser
-from core.spreadsheet_parser import SpreadsheetParser
-from core.totals_parser import TotalsParser
+from core.ai_reader import SUPPORTED_EXTENSIONS, read_files
+from core.ai_errors import missing_api_key
+from core import document_rules
 from core.tax_categorizer import TaxCategorizer, SCHEDULE_C_CATEGORIES
 from core.exception_analyzer import ExceptionAnalyzer
 from core.question_generator import ClientQuestionGenerator
-from core.reconciliation import ReconciliationChecker
 from core.excel_exporter import ExcelWorkpaperExporter
 from core.answer_applier import apply_client_answers, ANSWER_OPTIONS, uncategorized_expense_answer_options
 from core.check_matcher import match_checks_to_transactions
@@ -21,7 +20,7 @@ from theme import CSS, render_progress_steps
 # Bumped on every meaningful change to this file, so whoever is looking at the
 # app can tell which version is running just by glancing at the sidebar --
 # there is no separate deploy/build pipeline that would otherwise show that.
-APP_VERSION = "v14"
+APP_VERSION = "v15"
 
 
 def _running_commit() -> str:
@@ -66,11 +65,8 @@ def _get_app_password() -> str:
 
 
 def _get_openai_api_key() -> str:
-    """Same "no secrets file at all" guard as _get_app_password(). Checked
-    once at startup below, which also copies it into os.environ so
-    core/idp_extractor.py and core/bank_learner.py -- both framework-
-    agnostic, no Streamlit import -- can read it the ordinary way any
-    OpenAI SDK code does."""
+    """Copied into os.environ below so core/ai_reader.py (no Streamlit
+    import) reads it the ordinary way."""
     try:
         return st.secrets.get("OPENAI_API_KEY", "") or os.environ.get("OPENAI_API_KEY", "")
     except FileNotFoundError:
@@ -80,24 +76,6 @@ def _get_openai_api_key() -> str:
 _openai_key = _get_openai_api_key()
 if _openai_key:
     os.environ["OPENAI_API_KEY"] = _openai_key
-
-
-def _get_github_token() -> str:
-    """Same "no secrets file at all" guard as _get_app_password(). Checked
-    once at startup, copied into os.environ so
-    core/github_profile_sync.py (framework-agnostic, no Streamlit import)
-    can read it the ordinary way. Scoped to a single repo with
-    Contents: Read and write only -- see README.md for exact setup steps."""
-    try:
-        return st.secrets.get("GITHUB_TOKEN", "") or os.environ.get("GITHUB_TOKEN", "")
-    except FileNotFoundError:
-        return os.environ.get("GITHUB_TOKEN", "")
-
-
-_github_token = _get_github_token()
-if _github_token:
-    os.environ["GITHUB_TOKEN"] = _github_token
-
 
 def check_password() -> bool:
     """Gates the whole app behind one shared password so a link leak doesn't
@@ -162,9 +140,6 @@ def _new_client_state(name: str = "") -> Dict[str, Any]:
         "reconciliation_results": [],
         "duplicates_flagged": [],
         "unique_file_count": 0,
-        # Populated only by the multiclass IDP escalation path (see
-        # core/pdf_parser.py's _recover_unrecognized_bank) when an
-        # unrecognized upload turns out not to be a bank statement at all.
         "check_records": [],
         "unmatched_check_records": [],
         "supporting_documents": [],
@@ -286,37 +261,11 @@ materiality_threshold = st.sidebar.number_input(
 )
 
 st.sidebar.markdown("---")
-st.sidebar.header("AI Document Processing")
+st.sidebar.header("AI Reader")
 if _openai_key:
-    enable_llm_fallback = st.sidebar.checkbox(
-        "Use AI for documents the rule-based parser can't read", value=True,
-        help="Only used when a document's own section headers don't match any bank "
-             "this tool already knows (its extracted totals don't reconcile against "
-             "what the statement declares) -- a normal Regions/Capital One/Chase "
-             "statement never reaches this. Costs a few cents per such file. When it "
-             "runs, it first classifies the document (bank statement / check copy / "
-             "invoice / receipt) and extracts it accordingly -- a bank statement's "
-             "format is learned and reused for free afterward; a check copy's payee "
-             "gets matched to its \"Check #...\" line item; an invoice/receipt is kept "
-             "as a supporting document."
-    )
+    st.sidebar.caption("✓ Ready. The AI reads every file; plain rules do the math and the categories.")
 else:
-    enable_llm_fallback = False
-    st.sidebar.caption(
-        "No OPENAI_API_KEY configured -- a document the rule-based parser can't read "
-        "will be flagged for manual review instead of processed by AI. See "
-        "[.streamlit/secrets.toml.example](https://github.com/hancel-eng/schedule-c-prep-tool/blob/main/.streamlit/secrets.toml.example)."
-    )
-
-if enable_llm_fallback:
-    if _github_token:
-        st.sidebar.caption("✓ Learned bank profiles are committed to GitHub -- they survive a redeploy.")
-    else:
-        st.sidebar.caption(
-            "No GITHUB_TOKEN configured -- a learned bank profile works for the rest of this running "
-            "instance, but won't survive the next deploy. See "
-            "[.streamlit/secrets.toml.example](https://github.com/hancel-eng/schedule-c-prep-tool/blob/main/.streamlit/secrets.toml.example)."
-        )
+    st.sidebar.error(missing_api_key().message + " " + missing_api_key().fix)
 
 # Custom payee rules a prior session may have saved (core/tax_categorizer.py's
 # TaxCategorizer loads custom_rules.json automatically) still apply here even
@@ -333,9 +282,9 @@ st.caption("If a file with an identical name was already processed, it's flagged
 # brand-new client rather than showing whatever the previously-active
 # client had uploaded.
 uploaded_files = st.file_uploader(
-    "Upload Bank PDFs, Spreadsheets (.xlsx/.csv), or Summary Totals",
+    "Upload statements, checks, receipts, invoices, photos, spreadsheets, or Word files",
     accept_multiple_files=True,
-    type=["pdf", "xlsx", "xls", "csv", "json"],
+    type=[ext.lstrip(".") for ext in SUPPORTED_EXTENSIONS],
     key=f"uploader_{active_client_key}",
 )
 
@@ -372,7 +321,8 @@ if uploaded_files or has_existing_data:
     # this button is clicked.
     if not already_processed:
         st.info(f"**{len(uploaded_files)} file(s) ready.** Click **Start Processing** below when you're ready to extract and categorize them.")
-        start_clicked = st.button("Start Processing", type="primary", key=f"start_processing_{active_client_key}")
+        start_clicked = st.button("Start Processing", type="primary", key=f"start_processing_{active_client_key}",
+                                  disabled=not _openai_key)
         if not start_clicked:
             st.stop()
 
@@ -407,68 +357,53 @@ if uploaded_files or has_existing_data:
             dedup = FilenameDeduplicator()
             unique_files, duplicates_flagged = dedup.process_files(uploaded_files)
 
-            pdf_parser = BankPDFParser(categorizer=categorizer, enable_llm_fallback=enable_llm_fallback)
-            sheet_parser = SpreadsheetParser(categorizer=categorizer)
-            totals_parser = TotalsParser()
+            def on_read_progress(done, total, message):
+                mark_steps("extract", f"{done} of {total} part(s) read · {message}")
+                file_progress_slot.progress(done / total if total else 1.0)
 
-            parsed_transactions: List[Dict[str, Any]] = []
-            months_found: List[int] = []
-            diagnostics_log = []
-            reconciler = ReconciliationChecker()
-            reconciliation_results: List[Dict[str, Any]] = []
-            # Only ever populated by the multiclass IDP escalation path --
-            # see core/pdf_parser.py's _recover_unrecognized_bank. A
-            # standalone check copy or an invoice/receipt is never a bank
-            # statement, so it's kept out of parsed_transactions/
-            # reconciliation_results entirely rather than appearing there
-            # as a confusing "0 transactions, not reconcilable" entry.
-            check_records: List[Dict[str, Any]] = []
-            supporting_documents: List[Dict[str, Any]] = []
-
-            for i, file_obj in enumerate(unique_files):
-                filename = file_obj.name
-                mark_steps("extract", f"{filename} · file {i + 1} of {len(unique_files)}")
-                file_progress_slot.progress(i / len(unique_files))
-
-                if filename.lower().endswith('.pdf'):
-                    res = pdf_parser.parse_pdf(file_obj, filename)
-                    doc_type = res.get('document_type', 'bank_statement')
-
-                    if doc_type == 'check' and res.get('check_record'):
-                        check_records.append({**res['check_record'], "source_file": filename})
-                        diagnostics_log.append({"file": filename, "type": "Check Copy", "count": 1, "details": res.get('diagnostics')})
-                    elif doc_type in ('invoice', 'receipt'):
-                        if res.get('supporting_document'):
-                            supporting_documents.append({**res['supporting_document'], "source_file": filename})
-                        diagnostics_log.append({"file": filename, "type": doc_type.title(), "count": 1, "details": res.get('diagnostics')})
-                    elif doc_type == 'unknown':
-                        diagnostics_log.append({"file": filename, "type": "Unknown", "count": 0, "details": res.get('diagnostics')})
-                    else:
-                        parsed_transactions.extend(res['transactions'])
-                        months_found.extend(res['months_found'])
-                        reconciliation_results.append(reconciler.check_document(
-                            filename, res['statement_summary'], res['transactions']
-                        ))
-                        diagnostics_log.append({"file": filename, "type": "PDF", "count": len(res['transactions']), "details": res.get('diagnostics'), "ai_error": res.get('ai_error')})
-
-                elif filename.lower().endswith(('.xlsx', '.xls', '.csv')):
-                    res = sheet_parser.parse_spreadsheet(file_obj, filename)
-                    parsed_transactions.extend(res['transactions'])
-                    diagnostics_log.append({"file": filename, "type": "Spreadsheet", "count": len(res['transactions']), "details": res.get('diagnostics')})
-
+            read_results = read_files(
+                [(f.name, f.getvalue()) for f in unique_files],
+                tax_year=int(tax_year), on_progress=on_read_progress,
+            )
             file_progress_slot.empty()
 
-            # Fill in the payee on every "Check #NNNN" line item the
-            # statements above produced, using whatever check copies were
-            # uploaded alongside them -- raised directly: "las copias de
-            # cheques son necesarias, para saber quién fue el proveedor."
+            parsed_transactions: List[Dict[str, Any]] = []
+            diagnostics_log = []
+            reconciliation_results: List[Dict[str, Any]] = []
+            check_records: List[Dict[str, Any]] = []
+            supporting_documents: List[Dict[str, Any]] = []
+            statement_periods = []
+
+            for filename, read in read_results.items():
+                usage = read["usage"]
+                usage_note = (f"AI use: {usage['input_tokens']:,} tokens in, "
+                              f"{usage['output_tokens']:,} tokens out, {read['part_count']} part(s).")
+                if read["error"]:
+                    diagnostics_log.append({"file": filename, "type": "Not read", "count": 0,
+                                            "details": ["Nothing from this file was counted.", usage_note],
+                                            "ai_error": read["error"]})
+                    continue
+                ruled = document_rules.apply_rules(filename, read["documents"], categorizer)
+                parsed_transactions.extend(ruled["transactions"])
+                reconciliation_results.extend(ruled["reconciliation_results"])
+                check_records.extend(ruled["check_records"])
+                supporting_documents.extend(ruled["supporting_documents"])
+                statement_periods.extend(ruled["statement_periods"])
+                found = [document_rules.document_label(d) for d in read["documents"]] or ["nothing financial"]
+                diagnostics_log.append({"file": filename, "type": "Read by AI", "count": len(ruled["transactions"]),
+                                        "details": [f"Found: {', '.join(found)}."] + ruled["notes"] + [usage_note],
+                                        "ai_error": None})
+
+            # Fill in the payee on every "Check #NNNN" line item using any
+            # check copies uploaded alongside the statements.
             matched_count, unmatched_checks = match_checks_to_transactions(check_records, parsed_transactions)
 
             mark_steps("coverage", f"{len(parsed_transactions):,} transactions from {len(unique_files)} file(s)")
-            coverage_info = pdf_parser.check_12_month_coverage(months_found)
+            coverage_info = document_rules.check_12_month_coverage(
+                document_rules.months_covered(parsed_transactions, statement_periods, int(tax_year)))
 
             mark_steps("reconcile", coverage_info['status_message'])
-            reconciliation_summary = reconciler.summarize(reconciliation_results)
+            reconciliation_summary = document_rules.summarize(reconciliation_results)
             mark_steps(None)  # all 4 steps done
 
             # A genuinely new set of files starts this client fresh -- any
@@ -552,8 +487,9 @@ if uploaded_files or has_existing_data:
         )
         for entry in ai_failures:
             err = entry["ai_error"]
+            where = f" (while reading {err['where']})" if err.get("where") else ""
             st.markdown(
-                f"- **{entry['file']}** — {err['message']}  \n"
+                f"- **{entry['file']}**{where} — {err['message']}  \n"
                 f"  **What to do:** {err['fix']}  \n"
                 f"  `Error code: {err['code']}`"
             )

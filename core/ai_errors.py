@@ -70,7 +70,7 @@ def from_openai_exception(exc: Exception) -> AIExtractionError:
     if isinstance(exc, openai.NotFoundError):
         return AIExtractionError(
             "MODEL_NOT_FOUND", "The AI model this app uses isn't available on this OpenAI account.",
-            "Check the model name in core/idp_extractor.py against the models your OpenAI account can use.",
+            "Check the model name in core/ai_reader.py against the models your OpenAI account can use.",
             detail)
     if isinstance(exc, (openai.BadRequestError, openai.UnprocessableEntityError)):
         return AIExtractionError(

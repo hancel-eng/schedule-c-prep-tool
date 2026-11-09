@@ -13,173 +13,62 @@ it's built and why, for anyone about to change it.
 - [Client questions and the answer loop](#client-questions-and-the-answer-loop)
 - [The Streamlit session pattern](#the-streamlit-session-pattern)
 - [Visual theme](#visual-theme)
-- [Unrecognized documents: the multiclass self-teaching fallback](#unrecognized-documents-the-multiclass-self-teaching-fallback)
+- [Retired: rule-based readers and learned bank profiles](#retired-rule-based-readers-and-learned-bank-profiles)
 - [Testing](#testing)
 
 ## Pipeline, module by module
 
-`app.py` is orchestration only — it calls into `core/` in order and renders
-the result. Business logic lives in `core/` and has no Streamlit dependency,
-so every module is independently unit-testable (and is: see
-[Testing](#testing)).
+`app.py` is orchestration only. Business logic lives in `core/` with no
+Streamlit dependency, so every module is unit-testable on its own.
 
-1. **`core/deduplication.py`** — `FilenameDeduplicator`. Compares uploaded
-   filenames only (never transaction contents — see
-   [README.md](README.md#key-design-decisions) for why). A second file with
-   an identical name is skipped and flagged; everything else keeps 100% of
-   its transactions.
+Since 2026-11-09 the split is strict: **the AI reads, rules decide.** The
+AI only transcribes what is printed. Everything after that (signs, card
+payments vs. refunds, categories, reconciliation, questions) is plain
+Python.
 
-2. **`core/pdf_parser.py`** — `BankPDFParser`. Routes a PDF to one of three
-   strategies by filename keyword:
-   - a **P&L report** (QuickBooks-style, possibly comparative with one
-     column per year — picks the column matching the requested tax year,
-     skips subtotal/derived lines so they don't double-count, preserves the
-     source's own sign),
-   - a **credit card statement** (transaction list + an "Account Summary"
-     box with Payments/Transactions/Fees/Interest, parsed separately by
-     `_capture_credit_card_balances`),
-   - or a **general bank statement / receipt** (section-tracked
-     DEPOSITS/WITHDRAWALS/CHECKS, with a two-per-line cleared-checks table
-     format and support for a check with no recorded number).
-
-   Also resolves each transaction's calendar year from the statement's own
-   closing month (parsed from the filename's `MM DD YYYY` convention) rather
-   than blanket-stamping every transaction with one year — a billing cycle
-   that closes in January routinely opens in December of the *prior* year.
-
-   Text extraction goes through `_extract_page_text`, which lowers
-   `pdfplumber`'s `x_tolerance` and then runs a merge-recovery heuristic
-   (`_normalize_spacing`) for statements where the source PDF itself has no
-   space between adjacent text runs (confirmed at the character-coordinate
-   level on a real statement — two entirely different root causes that both
-   look like "the words ran together").
-
-   For the general bank-statement strategy specifically, an unrecognized
-   bank's format no longer has to be fixed by hand — see
-   [Unrecognized documents: the multiclass self-teaching fallback](#unrecognized-documents-the-multiclass-self-teaching-fallback)
-   below, which covers this module together with `bank_profiles.py`,
-   `llm_extractor.py`, and `bank_learner.py`.
-
-3. **`core/bank_profiles.py`** — `BankProfile`, `load_bank_profiles`,
-   `save_bank_profile`. A learned bank's section-header vocabulary, stored
-   as JSON under `bank_profiles/` (committed to the repo — it's a bank's
-   public statement wording, never client data), not new Python. Malformed
-   or missing profile files are skipped, never raised, since a bad profile
-   must not be able to break parsing for every other document.
-
-4. **`core/idp_extractor.py`** — `classify_and_extract`. The paid
-   escalation path for a document `pdf_parser.py`'s rules don't recognize
-   at all. Sends it to OpenAI (Responses API) for classification
-   (`bank_statement` / `check` / `invoice` / `receipt` / `unknown`) and
-   type-specific extraction in one call, via a `strict: true` Structured
-   Outputs JSON schema covering all four shapes at once — never
-   categorization, for a bank statement or anything else. A bank
-   statement's transcribed transactions still go through the ordinary
-   `TaxCategorizer.categorize_transaction()` call, same as a rule-based
-   extraction. Also exports `verify_bank_statement_balance_chain` (an
-   independent, Python-side re-check of the per-row running-balance
-   arithmetic the model was asked to self-verify — never trusts that
-   self-report alone) and `bank_statement_payload_to_transactions` (maps
-   the bank-statement shape into the same transaction-dict shape every
-   other strategy produces). Needs `OPENAI_API_KEY` in the environment
-   (see [README.md](README.md#unrecognized-bank-formats)); a missing key or
-   package raises a clean, catchable `RuntimeError`, not a crash.
-
-5. **`core/bank_learner.py`** — `learn_bank_profile`. Asks the same model
-   to name the section-header phrases in a statement `idp_extractor.py`
-   already classified and transcribed as a bank statement, returning a
-   candidate `BankProfile`. Never trusted on its own — see the self-teaching
-   section below for how the caller verifies it before saving.
-
-6. **`core/github_profile_sync.py`** — `commit_profile_to_github`. Writes a
-   verified, saved profile straight back to `bank_profiles/` on this repo's
-   `main` branch via the GitHub Contents API, so it survives the next
-   deploy — `core/bank_profiles.py`'s own local save only lasts for the
-   currently-running instance, since Streamlit Community Cloud's filesystem
-   is ephemeral and re-clones the repo from scratch on every deploy/restart.
-   Needs `GITHUB_TOKEN` in the environment, a fine-grained GitHub token
-   scoped to **only** this repository with **only** "Contents: Read and
-   write" permission (see
-   [README.md](README.md#unrecognized-bank-formats) for exact setup steps).
-   Without it, never raises and never blocks the extraction that already
-   succeeded — a learned profile just goes back to working-for-this-
-   instance-only, the same degraded-but-functional state the feature was in
-   before this module existed.
-
-7. **`core/check_matcher.py`** — `match_checks_to_transactions`. Fills in
-   the payee on a "Check #NNNN" transaction (already extracted from a
-   statement's own cleared-checks listing, which never prints a payee)
-   using a standalone check-copy classified by `idp_extractor.py`. Matches
-   by check number first, amount only as a fallback and only when it
-   uniquely identifies one still-unlabeled check transaction — never
-   guesses when two checks share an amount. A check that can't be matched
-   with confidence is returned, not dropped; `app.py` surfaces it in the
-   Supporting Documents tab as unmatched.
-
-8. **`core/spreadsheet_parser.py`** — `SpreadsheetParser`. Client Excel/CSV
-   files vary in whether income is the positive or negative sign
-   (`_detect_sign_convention` classifies each sheet as `standard`,
-   `inverted`, or `unsigned` and normalizes to the tool-wide convention:
-   income positive, expenses negative — the same convention the PDF parser
-   uses).
-
-9. **`core/totals_parser.py`** — `TotalsParser`. Maps client-provided
-   year-end totals to Schedule C lines with special-rule flags (vehicle
-   mileage vs. actual, the 50% meals limitation, the 1099 threshold, health
-   insurance belonging on Schedule 1 not Schedule C, home office). Not
-   currently reachable from the UI — see
-   [README.md](README.md#known-limitations--roadmap).
-
-10. **`core/tax_categorizer.py`** — `TaxCategorizer`. The keyword dictionary
-   (`SCHEDULE_C_CATEGORIES`) and the Non-P&L exclusion patterns
-   (`NON_PNL_PATTERNS`), both matched on **word boundaries**, not bare
-   substrings — a short/generic keyword like `mobil` (the gas brand) must
-   not match inside an unrelated word like `mobile`. `clean_payee_text`
-   normalizes card-network sub-merchant descriptors (`*` as a word
-   separator, e.g. `Google *Ads`) and apostrophes (a bank statement
-   generally can't print one, so `O'Reilly` in the dictionary is matched the
-   same way against a statement's `O Reilly`). Custom per-client rules
-   (`custom_rules.json`) take precedence over the built-in dictionary but
-   not over Non-P&L detection.
-
-11. **`core/exception_analyzer.py`** — `ExceptionAnalyzer`. Scans every
-   transaction into review queues: potential personal expense, potential
-   fixed asset (over the de minimis threshold, or matching an
-   asset-shaped keyword), 1099 accumulation per contractor, unusual/large
-   transactions, and everything already excluded as Non-P&L. A transaction
-   already stamped `client_confirmed=True` (see
-   [Client questions and the answer loop](#client-questions-and-the-answer-loop))
-   is skipped — this, not category text, is what lets an answered question
-   stop regenerating.
-
-12. **`core/vendor_grouping.py`** — `group_potential_personal`. Groups
-   personal-expense-review transactions by vendor (P2P payment apps grouped
-   by service *and* recipient specifically, so different people paid through
-   the same app are never merged) and applies the materiality threshold to
-   each group's total, not each individual charge.
-
-13. **`core/question_generator.py`** — `ClientQuestionGenerator`. Builds the
-   client-facing question list from the exception queues. Every question
-   carries `transaction_keys` — a list, even for a single-transaction
-   question — back to the exact transaction(s) it concerns (see
-   `core/transaction_utils.py`: a stable identity built from
-   date + payee + amount + source file, since there's no database or
-   synthetic id in a stateless single-session app).
-
-14. **`core/answer_applier.py`** — `apply_client_answers`. Applies an
-   answered question to the transaction list. Answers are a fixed
-   vocabulary per question type (`ANSWER_OPTIONS`), never free text, so this
-   module never has to guess what an answer meant — an answer outside the
-   vocabulary (or, for an uncategorized-expense question, not one of the
-   tool's own recognized categories) is logged for the preparer to resolve
-   by hand and changes nothing. Every transaction it touches is stamped
-   `client_confirmed=True`.
-
-15. **`core/reconciliation.py`** — `ReconciliationChecker`. See
-    [Reconciliation](#reconciliation).
-
-16. **`core/excel_exporter.py`** — `ExcelWorkpaperExporter`. Builds the
-    seven-sheet workbook described in [README.md](README.md#what-it-produces).
+1. `core/deduplication.py` skips a file whose name was already uploaded.
+   Filename only, never transaction-level (that silently dropped real
+   transactions when it was tried).
+2. `core/ai_reader.py` reads every file with OpenAI (`gpt-6-astra`):
+   - `plan_parts` splits the file so no single AI answer is long enough to
+     be cut off: PDFs into 4-page parts (sent as real PDF pages with
+     `detail: "high"`, which is also the OCR path for scans), Excel/CSV/
+     Word into 120-line parts (later parts repeat the first rows as
+     `[CONTEXT]` so column headings stay clear), images whole. Supported:
+     PDF, JPG/PNG/WEBP/GIF, XLSX/XLSM/XLS/CSV, DOCX. Anything else, or an
+     empty, damaged, or password-locked file, gets a clear error code.
+   - `read_part` makes one strict-JSON-schema call per part. A response
+     whose `status` is `incomplete` is never used: the part is split in
+     half and retried automatically, down to one page.
+   - `read_files` runs 4 calls in parallel across all files and reports
+     progress. A file with any failed part gets its error and contributes
+     nothing (a half-read file gives wrong totals).
+   - `merge_parts` stitches parts back into whole documents: a statement
+     spread over several parts becomes one statement again; a new
+     statement, another account, or two documents on the same pages stay
+     separate. Repeated summary lines are kept once.
+   The AI returns, per document: kind (bank statement, credit card
+   statement, check, invoice, receipt, P&L, transaction list, other),
+   balances as printed, each summary-box total as printed with whether it
+   adds or subtracts, every row (date, description, positive amount,
+   credit/debit, running balance if printed, section heading, check
+   number, a category only if the source has its own category column),
+   and anything it could not read.
+3. `core/ai_errors.py` turns every failure (SDK exceptions, cut-off,
+   refused, filtered, empty, or invalid answers, bad files) into one
+   `AIExtractionError` with a stable code, a plain-English message, what
+   to do, and the technical detail. The app shows each failed file in a
+   red box.
+4. `core/document_rules.py` applies the rules: signed amounts, card payment
+   vs. refund (a card credit that the categorizer recognizes as a card
+   payment stays a non-income transfer; any other card credit is money
+   back), check rows labeled `Check #NNNN` so `core/check_matcher.py` can
+   attach payees from check copies, categorization through
+   `core/tax_categorizer.py`, verification (below), and month coverage
+   (from transaction dates and statement period ends, tax year only).
+5. `core/exception_analyzer.py`, `core/vendor_grouping.py`,
+   `core/question_generator.py`, `core/answer_applier.py`, and
+   `core/excel_exporter.py` are unchanged by the AI-first rebuild.
 
 ## Confidence states
 
@@ -209,75 +98,29 @@ returned/reversed deposits.
 
 ## Reconciliation
 
-`ReconciliationChecker.check_document` runs two independent checks per
-statement, and requires **both** to agree — not "the first one that has
-data," which used to be a real gap (see below):
+`core/document_rules.verify_statement` checks each statement against its
+own printed numbers, using only what the AI transcribed and never the
+model's own opinion of whether it balances:
 
-1. **Statement integrity** — does the statement's own declared arithmetic
-   hold (`beginning + deposits − withdrawals == ending`)? A failure here
-   means a balance was misread, not that a transaction is missing.
-2. **Extraction completeness** — do the transactions actually extracted from
-   the document add up to the totals the statement itself declares? This is
-   the check that catches a regex parser silently dropping rows.
+1. **Balance equation:** opening balance plus and minus every extracted
+   row must equal the printed closing balance (a credit card moves the
+   other way: charges raise it, payments lower it).
+2. **Summary totals:** extracted money in and money out must equal the
+   summary box. Category lines (Chase's "ATM & Debit Card Withdrawals",
+   "Electronic Withdrawals", ...) are summed; if the box also prints a
+   "Total ..." line equal to its parts, only the total is used.
+3. **Running balance:** where a balance is printed on a row, the
+   extracted rows must reach it exactly; the first mismatch names the row.
 
-A document that declares no balances is reported **Not Reconcilable**,
-never treated as a pass.
+Every available check must pass for "Reconciled". Any failure is a
+"Discrepancy" with a plain-English explanation of how much is off and
+where. A document with nothing to check against is "Not Reconcilable",
+never a pass. Invoices and receipts get the same treatment (subtotal +
+tax = total; line items = subtotal).
 
-### Not every bank declares one clean "Total Withdrawals" line
-
-Check 2 depends on `total_deposits`/`total_withdrawals` actually being
-captured by `_capture_balances` (`core/pdf_parser.py`) — and a real Chase
-statement doesn't print a single withdrawals total at all. It breaks
-withdrawals into its own category lines instead: "ATM & Debit Card
-Withdrawals 44 -8,442.18", "Electronic Withdrawals 10 -16,899.71", and
-separately "Checks Paid 2 -2,700.00" / "Fees 31 -93.00". The original
-`_capture_balances` used first-occurrence-wins for every declared figure
-(correct for `beginning_balance`/`ending_balance`, which genuinely repeat
-the same true value in per-page footers) — applied to withdrawals, it
-captured only the first category line and silently discarded the rest,
-leaving `declared_withdrawals` at a small fraction of the true total. The
-extraction underneath was entirely correct; check 2 still failed, because
-the number it was compared against was wrong. Confirmed on a real 13-
-statement Chase engagement: 1 of 13 reported "Reconciled."
-
-Fixed by splitting `_capture_balances`'s semantics in two:
-`beginning_balance`/`ending_balance` keep first-occurrence-wins (they're
-one true value repeated verbatim); `total_deposits`/`total_withdrawals`/
-`total_checks`/`total_fees` are **summed across every matching line**
-instead (`BankPDFParser._SINGLE_VALUE_BALANCE_FIELDS` marks which fields
-get which treatment). This isn't a Chase-specific patch — it generalizes
-to any bank that reports deposits, withdrawals, checks, or fees as
-several of its own category totals rather than one clean figure, present
-or future, without needing a new special case added by hand each time.
-
-### Both checks must agree, not just the first one with data
-
-`BankPDFParser._extraction_looks_reliable` (the inline self-check that
-decides whether to escalate an unrecognized document to AI — see
-[Unrecognized documents](#unrecognized-documents-the-multiclass-self-teaching-fallback))
-had the same structural gap, independently of the Chase bug above: it
-checked declared deposits/withdrawals *first*, and only fell back to the
-beginning/ending balance equation when those were completely absent (both
-exactly `0.0`). A bank whose declared totals are captured but
-*incomplete* — exactly Chase's shape before the fix above — would pass
-that first check on bad data and never even reach the balance-equation
-check, which is the stronger, far more universal signal (`beginning
-balance`/`ending balance` wording barely varies bank to bank; deposit/
-withdrawal recap wording is what keeps needing a new pattern). Fixed the
-same way `ReconciliationChecker` already worked: run every check the
-statement's declared figures make possible, and require **all** of them
-to pass, not just the first one that happened to have data.
-
-Credit card statements need a different comparison axis than bank
-statements: `is_deposit` reflects the *business's* cash flow (money into vs.
-out of the checking account), and on a credit card almost nothing is
-genuinely "money into the business" in that sense — a payment and a new
-charge are both `is_deposit=False`. Comparing declared payments against a
-near-always-zero deposits figure flagged real statements as a discrepancy
-regardless of whether anything was actually missing. For a `credit_card`
-document, extracted deposits/withdrawals are computed from **category**
-(`Non-P&L: Credit Card Payment` vs. everything else) instead of
-`is_deposit`.
+Verified on 2026-11-09 with one real Wells Fargo statement read by
+`gpt-6-astra`: all three checks passed (69 rows). Deleting one row from
+that data was caught by all three, naming the row.
 
 ## Client questions and the answer loop
 
@@ -435,142 +278,13 @@ Two hard constraints worth knowing before touching this:
   re-check the selectors against the new version's frontend bundle (or a
   live render) before trusting them again.
 
-## Unrecognized documents: the multiclass self-teaching fallback
+## Retired: rule-based readers and learned bank profiles
 
-The three-strategy PDF architecture (P&L report / credit card / general
-bank) and the categorization engine (word-boundary keyword matching,
-Non-P&L exclusion patterns) are general-purpose and apply to any uploaded
-file. The specific *section-header vocabulary* inside the general-bank
-strategy — what phrase means "this is the deposits section," "this is the
-cleared-checks listing" — started out hardcoded for two banks (Regions,
-Capital One), and this is exactly what broke on a real Chase statement:
-Chase's own header wording ("ATM & Debit Card Withdrawals," "Electronic
-Withdrawals") matched none of it, and — worse — a repeated "Total ATM
-Withdrawals & Debits $0.00" rollup line in Chase's own summary table
-happened to contain the same substring the header check looked for,
-flipping the parser's internal section state to the wrong value and
-turning every row of the statement's daily-balance table into a phantom
-deposit (see [CHANGELOG.md](CHANGELOG.md), 2026-09-17 — Gross Receipts was
-reported at ~$1.3M on a real engagement where the true figure was
-$142,223.72).
-
-Chase's specific header phrases are now hardcoded too, the same way
-Regions' and Capital One's are — but the next unrecognized bank no longer
-needs a human to notice, diagnose, and patch `pdf_parser.py` by hand before
-it's usable. `BankPDFParser.parse_pdf()` runs an escalation chain instead:
-
-1. **Rules engine** (`_parse_general_or_scanned_pdf`, free, instant) — the
-   hardcoded vocabulary, same as before.
-2. **Self-check** (`_extraction_looks_reliable`) — does what was extracted
-   foot against what the statement itself declares (its own "Total
-   Deposits" / "Total Withdrawals" figures, captured by
-   `_capture_balances` independently of section-header detection)? If
-   there's nothing declared to check against, falls back to "did we
-   extract at least one transaction at all." A statement from an
-   already-known bank passes this and stops here — nothing below ever
-   runs for it.
-3. **Learned profiles** (`core/bank_profiles.py`, free) — every
-   `bank_profiles/*.json` file is tried in turn, feeding its phrases into
-   the same rules engine (`_parse_general_or_scanned_pdf(..., profile=...)`
-   — additive, not a separate code path) until one passes the same
-   self-check.
-4. **Multiclass AI classification** (`core/idp_extractor.py`, a few cents,
-   only reached if 1–3 all failed) — one call to OpenAI classifies the
-   document (`bank_statement` / `check` / `invoice` / `receipt` /
-   `unknown`) and extracts it accordingly, via a `strict: true` Structured
-   Outputs JSON schema covering all four shapes at once. This step exists
-   because step 1–3 always assumed an unrecognized document *was* a
-   mis-parsed bank statement — true for a genuinely new bank, but not for
-   a document that was never a bank statement at all (a standalone check
-   copy, an invoice, a receipt), which used to get silently force-fit into
-   the bank-statement pipeline and misread. The branch on
-   `detected_document_type`:
-   - `bank_statement` — transcribed transactions (date, payee, amount,
-     direction, and the running balance on that row if the statement
-     prints one) go through the ordinary rule-based `TaxCategorizer`, same
-     as every other strategy; an AI model is used for extraction only,
-     never for deciding a tax category. Verified by **two** independent
-     signals, neither the model's own self-reported
-     `quality_validation.mathematically_balanced` alone: the same
-     aggregate "declared vs. extracted" check every strategy is held to
-     (step 2's `_extraction_looks_reliable`), plus, when the statement
-     prints a running balance per row,
-     `verify_bank_statement_balance_chain` -- walking `opening_balance`
-     forward through every transaction and comparing against each row's
-     own `resulting_balance`. This second check is strictly stronger: it's
-     what would have caught Wells Fargo's running-balance-misread-as-
-     amount bug (see [CHANGELOG.md](CHANGELOG.md), 2026-10-01) on its own,
-     row by row, rather than only at the aggregate level after the fact.
-   - `check` — extracted fields (drawer, payee, check number, amount) are
-     never transactions on their own; see
-     [Check copies: filling in a payee a statement never prints](#check-copies-filling-in-a-payee-a-statement-never-prints)
-     below.
-   - `invoice` / `receipt` — kept as a supporting document (issuer, date,
-     total, line items), shown for the preparer's reference; not matched
-     against transactions automatically.
-   - `unknown` — flagged for manual review. Zero transactions are counted
-     from it: the already-known-wrong rule-based garbage from step 1 is
-     never allowed to flow through just because *something* was extracted
-     from it.
-5. **Learning** (`core/bank_learner.py`) — only attempted when step 4
-   classified the document as a bank statement and it passed verification.
-   Asks the same model to name this bank's section-header phrases, then
-   re-runs the rules engine with that candidate profile against the *same*
-   document and compares the result to the AI's own verified numbers. Only
-   a profile that reproduces them exactly is saved to `bank_profiles/`;
-   the app never trusts an unverified profile, and a profile that fails
-   this check is simply discarded — that bank keeps using the AI path
-   until a profile that passes exists. A failure anywhere in this step is
-   swallowed (never allowed to take down an extraction that already
-   succeeded at step 4).
-6. **Persistence** (`core/github_profile_sync.py`) — only attempted once
-   step 5 already saved the profile locally. Commits the same profile
-   straight back to `bank_profiles/` on this repo's `main` branch via the
-   GitHub Contents API, so it survives the *next deploy* — the local save
-   in step 5 alone only lasts for the currently-running instance, since
-   Streamlit Community Cloud's filesystem is ephemeral and starts from a
-   fresh clone of the repo on every deploy/restart. Without this step (no
-   `GITHUB_TOKEN` configured, or the request fails for any reason), the
-   bank still works for the rest of this running instance; it just has to
-   be re-learned — paying the AI cost again — the next time the app
-   redeploys. Same swallow-and-continue discipline as step 5: a failure
-   here never takes down the extraction itself.
-
-Net effect: a brand-new bank costs a few cents the first time (maybe twice,
-if the first attempt's profile doesn't reproduce cleanly), then $0 forever
-after — across every future deploy, not just the current running instance
-— with zero code changes required. The sidebar toggle ("Use AI for
-documents...") and `OPENAI_API_KEY` gate step 4 entirely — with no key
-configured, an unrecognized document stops after step 3 and is flagged in
-its diagnostics notes for manual review, exactly as before this fallback
-existed; nothing about a recognized bank's behavior changes either way,
-and **this whole chain never runs at all for a document the filename-based
-router already knows how to read** (a recognized bank/credit-card
-statement, or a P&L report) — multiclass classification is additive to the
-existing cost-free fast path, not a replacement for it.
-
-### Check copies: filling in a payee a statement never prints
-
-A bank statement's own cleared-checks listing (`CHECK_DETAIL` section in
-`_parse_general_or_scanned_pdf`) only ever has a check number and an
-amount — no payee, because the statement itself doesn't print one. Raised
-directly by the client: "las copias de cheques son necesarias, porque
-cuando el cliente paga con cheque hay que saber quién fue el proveedor."
-
-When a separately-uploaded file is classified `check` (step 4 above), its
-extracted `payee`/`check_number`/`numerical_amount` become a match
-candidate for `core/check_matcher.py`'s `match_checks_to_transactions`,
-run once per upload batch in `app.py` after every file has been parsed.
-Matching is deliberately conservative, same "never guess" discipline as
-everywhere else: check number first (exact, digits only), amount only as
-a fallback when the number is missing *and* uniquely identifies one
-still-unlabeled check transaction — two checks for the same amount in the
-same statement (rent, a recurring vendor) is common enough that guessing
-would be worse than leaving both unmatched. A check copy that can't be
-matched with confidence is reported back as unmatched (shown in the
-**Supporting Documents** tab, which only appears when there's something in
-it) rather than silently attached to the nearest plausible transaction or
-dropped.
+Until 2026-11-09 PDFs were read by regex parsers tuned per bank, with AI
+only as a fallback and learned "bank profiles" committed to GitHub. All of
+that was removed: banks change their layouts, files come in many formats,
+and every format-specific rule was another way to misread a statement
+silently. Its history is in [CHANGELOG.md](CHANGELOG.md).
 
 ## Testing
 
@@ -578,19 +292,7 @@ dropped.
 pytest
 ```
 
-One test file per `core/` module, plus
-`tests/test_real_world_regressions.py`: regression tests for bugs found by
-running the pipeline against real client statements, each using a
-**synthetic fixture built to reproduce the same shape** — never the
-client's own files, which must never be committed (see
+One test file per `core/` module. The AI is always replaced by a fake in
+tests (`call_ai=` in `core/ai_reader.py`); no test makes a network call.
+Fixtures are synthetic; real client files must never be committed (see
 [README.md](README.md#data-handling)).
-
-`streamlit.testing.v1.AppTest` was also used, ad hoc, to drive the full
-`app.py` script headlessly against real files during development
-(`AppTest.from_file(...)`, then `file_uploader.upload(filename, content,
-mime_type)` with real bytes) — useful for catching Streamlit-specific
-integration bugs (e.g. a message wiped out by an `st.rerun()` immediately
-after it, never actually visible in a browser) that unit tests on `core/`
-alone can't reach. Not currently wired into the `pytest` suite as a
-standing test, since it depends on real files that aren't committed to the
-repo.

@@ -187,3 +187,36 @@ def test_returned_deposit_item_is_not_gross_receipts():
         "Returned Deposit Item # of Itm(S) 0001", "", 2100.0, True
     )
     assert cat == "Non-P&L: Returned/Reversed Deposit"
+
+
+# --- Moved from the retired rule-based PDF parser's regression file ---
+
+def test_merged_credit_card_payment_is_still_excluded_from_pnl():
+    """Confirms the normalization fix actually closes the categorization gap:
+    without it, this exact real-world string matched the "mobil" (gas brand)
+    keyword instead of being excluded as a card payment."""
+    categorizer = TaxCategorizer()
+    text = "CAPITAL ONE MOBILE PYMT Auth Date 19-Jan -"
+    cat, state, _ = categorizer.categorize_transaction(text, text, -2250.0, False)
+    assert cat == "Non-P&L: Credit Card Payment"
+
+
+def test_card_credit_refund_excluded_from_gross_receipts():
+    """A vendor purchase credit is its own category, distinct from a genuine
+    tax refund -- lumping them together made 15 of 16 "Tax Refund" items on a
+    real engagement actually be Home Depot/O'Reilly/Amazon credits."""
+    categorizer = TaxCategorizer()
+    cat, _, _ = categorizer.categorize_transaction(
+        "Card Credit The Home Depot", "Card Credit The Home Depot", 44.27, True
+    )
+    assert cat == "Non-P&L: Vendor Purchase Credit"
+
+
+def test_mobile_word_does_not_match_mobil_gas_keyword():
+    """"mobil" (Mobil gas stations, a Line 9 keyword) must not match as a
+    substring of the unrelated word "mobile"."""
+    categorizer = TaxCategorizer()
+    cat, _, _ = categorizer.categorize_transaction(
+        "Some Mobile App Subscription", "Some Mobile App Subscription", -9.99, False
+    )
+    assert cat != "Line 9: Car and truck expenses"

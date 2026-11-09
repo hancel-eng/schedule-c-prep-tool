@@ -8,6 +8,44 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for how the current system works,
 and [README.md](README.md#known-limitations--roadmap) for what's still
 open.
 
+## 2026-11-09 — The AI reads every file; rules do everything else (AI-first rebuild, steps 2-3)
+
+Decided by the client: the AI is the only reader, for any file type, and
+plain rules do everything after extraction. Banks change their layouts and
+files come in many formats, so per-bank regex parsing and learned bank
+profiles were removed entirely.
+
+Before building, one real call (`gpt-6-astra`, a real 6-page Wells Fargo
+statement, the previous extractor's prompt): complete answer in 47 s, 69
+rows, and all three checks passed (balance equation, summary totals,
+running balance per row). About 20k input and 6k output tokens.
+
+- New `core/ai_reader.py`: splits every file into parts (4 PDF pages with
+  `detail: "high"`, which is also the OCR path for scans; 120 lines of
+  Excel/CSV/Word with heading context; images whole), one strict-schema
+  call per part, automatic split-and-retry when an answer is cut off,
+  4 calls in parallel across files, and stitching parts back into whole
+  documents. New file types: images, DOCX, XLS. Clear codes for empty,
+  damaged, locked, or unsupported files.
+- The AI now transcribes each summary-box line as printed (with whether it
+  adds or subtracts) instead of a single "total withdrawals" it had to add
+  up itself, plus each row's section heading and check number.
+- New `core/document_rules.py`: signs, card payment vs. refund, check-row
+  labels for check matching, categorization, reconciliation (balance
+  equation + summary totals + running balance, all must pass; a "Total"
+  line equal to its parts is not double-counted), plain-English
+  explanations naming the row that breaks, invoice/receipt arithmetic, and
+  tax-year month coverage.
+- A file with any failed part contributes nothing and shows its error.
+- Removed: `core/pdf_parser.py`, `core/spreadsheet_parser.py`,
+  `core/idp_extractor.py`, `core/bank_learner.py`, `core/bank_profiles.py`,
+  `core/github_profile_sync.py`, `core/reconciliation.py`, `bank_profiles/`,
+  their tests, the AI on/off toggle, and `GITHUB_TOKEN`.
+- Truncation audit outside the AI: the only remaining slices are display
+  limits that say so ("largest 15 of N") or grouping keys; no data is cut.
+- Not yet verified live: the new prompt and schema have only been run
+  against a fake AI. The first real run should be one statement.
+
 ## 2026-11-09 — Every AI failure now has a clear error code (AI-first rebuild, step 1)
 
 First step of the AI-first rebuild (AI becomes the only reader; rules do

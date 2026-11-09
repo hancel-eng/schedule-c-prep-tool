@@ -8,7 +8,7 @@ import pytest
 
 from core import ai_errors
 from core.ai_errors import AIExtractionError
-from core.idp_extractor import parse_structured_response
+from core.ai_reader import parse_structured_response
 
 _REQUEST = httpx.Request("POST", "https://api.openai.com/v1/responses")
 
